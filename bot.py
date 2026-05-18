@@ -2,10 +2,13 @@ import asyncio
 import builtins
 import json
 import os
+import random
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import discord
 from discord import app_commands
@@ -38,6 +41,9 @@ GRAY_COLOR = 0x808080
 GREEN_COLOR = 0x2ECC71
 RED_COLOR = 0xE74C3C
 MAX_TRACKED_VOTES = 200
+MTTVALUES_ITEMS_URL = "https://firestore.googleapis.com/v1/projects/military-tycoon-trading-values/databases/(default)/documents/items"
+ITEM_CACHE_SECONDS = 900
+item_cache: dict[str, object] = {"items": [], "updated_at": 0.0}
 
 class VoteBot(discord.Client):
     def __init__(self) -> None:
@@ -264,10 +270,157 @@ def format_vote_counts(counts: dict[str, int]) -> str:
     )
 
 
-def create_vote_embed(color: int = GRAY_COLOR, counts: dict[str, int] | None = None) -> discord.Embed:
+def parse_firestore_value(value: dict) -> object:
+    if "stringValue" in value:
+        return value["stringValue"]
+
+    if "integerValue" in value:
+        return int(value["integerValue"])
+
+    if "doubleValue" in value:
+        return float(value["doubleValue"])
+
+    if "booleanValue" in value:
+        return bool(value["booleanValue"])
+
+    if "timestampValue" in value:
+        return value["timestampValue"]
+
+    if "arrayValue" in value:
+        return [parse_firestore_value(item) for item in value.get("arrayValue", {}).get("values", [])]
+
+    if "mapValue" in value:
+        return parse_firestore_fields(value.get("mapValue", {}).get("fields", {}))
+
+    return None
+
+
+def parse_firestore_fields(fields: dict) -> dict:
+    return {key: parse_firestore_value(value) for key, value in fields.items()}
+
+
+def fetch_mttvalues_items_sync() -> list[dict]:
+    items = []
+    page_token = None
+
+    while True:
+        query = {"pageSize": "1000"}
+        if page_token:
+            query["pageToken"] = page_token
+
+        url = f"{MTTVALUES_ITEMS_URL}?{urlencode(query)}"
+        request = Request(url, headers={"User-Agent": "MTTV Vote Bot"})
+
+        with urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        for document in payload.get("documents", []):
+            item = parse_firestore_fields(document.get("fields", {}))
+            item["id"] = document.get("name", "").split("/")[-1]
+            if item.get("name") and (item.get("valueMin") is not None or item.get("valueMax") is not None or item.get("value") is not None):
+                items.append(item)
+
+        page_token = payload.get("nextPageToken")
+        if not page_token:
+            break
+
+    return items
+
+
+async def get_mttvalues_items() -> list[dict]:
+    now = time.time()
+    cached_items = item_cache.get("items", [])
+    updated_at = float(item_cache.get("updated_at", 0.0))
+
+    if isinstance(cached_items, list) and cached_items and now - updated_at < ITEM_CACHE_SECONDS:
+        return cached_items
+
+    items = await asyncio.to_thread(fetch_mttvalues_items_sync)
+    item_cache["items"] = items
+    item_cache["updated_at"] = now
+    return items
+
+
+async def get_random_mttvalues_item() -> dict | None:
+    try:
+        items = await get_mttvalues_items()
+    except Exception as error:
+        print(f"Could not fetch MTTValues items: {error}")
+        return None
+
+    if not items:
+        return None
+
+    return random.choice(items)
+
+
+def format_number(value: object) -> str:
+    if value is None:
+        return "N/A"
+
+    try:
+        return f"{int(float(value)):,}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def get_item_low_high(item: dict) -> tuple[object, object]:
+    low = item.get("valueMin")
+    high = item.get("valueMax")
+
+    if low is None and high is None:
+        low = item.get("value")
+        high = item.get("value")
+    elif low is None:
+        low = high
+    elif high is None:
+        high = low
+
+    return low, high
+
+
+def create_vote_embed(
+    color: int = GRAY_COLOR,
+    counts: dict[str, int] | None = None,
+    item: dict | None = None,
+) -> discord.Embed:
+    counts = counts or empty_vote_counts()
+
+    if item:
+        low, high = get_item_low_high(item)
+        embed = discord.Embed(
+            title=f"Value vote: {item.get('name', VOTE_TEXT)}",
+            description=(
+                "Should this value go up, stay the same, or go down?\n\n"
+                f"{format_vote_counts(counts)}"
+            ),
+            color=discord.Color(color),
+        )
+        embed.add_field(name="Low", value=format_number(low), inline=True)
+        embed.add_field(name="High", value=format_number(high), inline=True)
+
+        demand = item.get("demand")
+        if demand is not None:
+            embed.add_field(name="Demand", value=str(demand), inline=True)
+
+        rarity = item.get("rarity")
+        if isinstance(rarity, list) and rarity:
+            embed.add_field(name="Rarity", value=", ".join(str(value) for value in rarity), inline=False)
+
+        tags = item.get("tags")
+        if isinstance(tags, list) and tags:
+            embed.add_field(name="Tags", value=", ".join(str(value) for value in tags), inline=False)
+
+        image = item.get("image")
+        if isinstance(image, str) and image.startswith("http"):
+            embed.set_thumbnail(url=image)
+
+        embed.set_footer(text=f"{UPVOTE} raise value  {NEUTRAL_VOTE} keep value  {DOWNVOTE} lower value | Source: mttvalues.com")
+        return embed
+
     return discord.Embed(
         title=VOTE_TEXT,
-        description=format_vote_counts(counts or empty_vote_counts()),
+        description=format_vote_counts(counts),
         color=discord.Color(color),
     )
 
@@ -308,12 +461,19 @@ async def update_vote_color(message: discord.Message) -> None:
     color = get_vote_color(counts)
     embed = message.embeds[0].copy() if message.embeds else create_vote_embed()
     embed.color = discord.Color(color)
-    embed.description = format_vote_counts(counts)
+    if embed.description and "Should this value" in embed.description:
+        embed.description = (
+            "Should this value go up, stay the same, or go down?\n\n"
+            f"{format_vote_counts(counts)}"
+        )
+    else:
+        embed.description = format_vote_counts(counts)
     await message.edit(embed=embed)
 
 
 async def send_vote(channel: discord.abc.Messageable) -> discord.Message:
-    message = await channel.send(embed=create_vote_embed())
+    item = await get_random_mttvalues_item()
+    message = await channel.send(embed=create_vote_embed(item=item))
 
     for reaction in VOTE_REACTIONS:
         await message.add_reaction(reaction)
