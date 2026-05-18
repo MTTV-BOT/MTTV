@@ -1,4 +1,5 @@
 import asyncio
+import builtins
 import json
 import os
 import time
@@ -11,6 +12,12 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 
+def print_flush(*args: object, **kwargs: object) -> None:
+    kwargs.setdefault("flush", True)
+    builtins.print(*args, **kwargs)
+
+
+print = print_flush
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
@@ -40,16 +47,22 @@ class VoteBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self) -> None:
+        command_names = [command.name for command in self.tree.get_commands()]
+        print(f"Registered local command(s): {', '.join(command_names)}")
+
         if GUILD_ID:
             try:
                 guild = discord.Object(id=int(GUILD_ID))
-                self.tree.copy_global_to(guild=guild)
+                print(f"Clearing old guild command(s) for GUILD_ID={GUILD_ID}.")
+                self.tree.clear_commands(guild=guild)
                 guild_commands = await self.tree.sync(guild=guild)
-                print(f"Synced {len(guild_commands)} guild command(s) for {GUILD_ID}.")
+                print(f"Guild command sync now has {len(guild_commands)} command(s).")
             except ValueError:
-                print("GUILD_ID must be a number. Syncing global commands instead.")
+                print("GUILD_ID must be a number. Skipping guild command cleanup.")
             except discord.DiscordException as error:
-                print(f"Guild command sync failed: {error}")
+                print(f"Guild command cleanup failed: {error}")
+        else:
+            print("GUILD_ID is empty. Old guild command duplicates cannot be cleared automatically.")
 
         try:
             global_commands = await self.tree.sync()
@@ -223,6 +236,24 @@ def bot_can_vote_in(channel: discord.TextChannel, guild: discord.Guild) -> tuple
     return True, ""
 
 
+def user_can_manage_guild(interaction: discord.Interaction) -> bool:
+    if not interaction.guild:
+        return False
+
+    if interaction.user.id == interaction.guild.owner_id:
+        return True
+
+    return isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild
+
+
+async def require_manage_guild(interaction: discord.Interaction) -> bool:
+    if user_can_manage_guild(interaction):
+        return True
+
+    await interaction.response.send_message("You need Manage Server permission to use this.", ephemeral=True)
+    return False
+
+
 def format_vote_counts(counts: dict[str, int]) -> str:
     return (
         f"{UPVOTE} {counts[normalize_emoji(UPVOTE)]}   "
@@ -290,10 +321,12 @@ async def send_vote(channel: discord.abc.Messageable) -> discord.Message:
 
 @bot.tree.command(name="channel", description="Choose the channel for automatic votes.")
 @app_commands.describe(channel="The channel where new votes should be posted.")
-@app_commands.default_permissions(manage_guild=True)
 async def channel(interaction: discord.Interaction, channel: discord.TextChannel):
     if not interaction.guild:
         await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
+        return
+
+    if not await require_manage_guild(interaction):
         return
 
     allowed, error = bot_can_vote_in(channel, interaction.guild)
@@ -317,7 +350,6 @@ async def channel(interaction: discord.Interaction, channel: discord.TextChannel
         app_commands.Choice(name="hours", value="hours"),
     ]
 )
-@app_commands.default_permissions(manage_guild=True)
 async def time_command(
     interaction: discord.Interaction,
     amount: app_commands.Range[int, 1, 100000],
@@ -325,6 +357,9 @@ async def time_command(
 ):
     if not interaction.guild:
         await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
+        return
+
+    if not await require_manage_guild(interaction):
         return
 
     guild_config = get_guild_config(interaction.guild.id)
@@ -359,10 +394,12 @@ async def time_command(
 
 
 @bot.tree.command(name="vote_now", description="Post a vote immediately in the saved channel.")
-@app_commands.default_permissions(manage_guild=True)
 async def vote_now(interaction: discord.Interaction):
     if not interaction.guild:
         await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
+        return
+
+    if not await require_manage_guild(interaction):
         return
 
     guild_config = get_guild_config(interaction.guild.id)
