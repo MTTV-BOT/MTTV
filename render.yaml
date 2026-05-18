@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: vote-system-bot-mttv
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: GUILD_ID
+        sync: false
+      - key: VOTE_CHANNEL_ID
+        sync: false
+      - key: VOTE_INTERVAL_SECONDS
+        sync: false
+      - key: VOTE_TEXT
+        value: vote
