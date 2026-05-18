@@ -8,7 +8,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 import discord
@@ -390,6 +390,14 @@ def normalize_mttvalues_item(raw_item: dict) -> dict:
     }
 
 
+def item_from_firestore_document(document: dict) -> dict:
+    raw_item = parse_firestore_fields(document.get("fields", {}))
+    raw_item["id"] = document.get("name", "").split("/")[-1]
+    raw_item["updateTime"] = document.get("updateTime")
+    raw_item["createTime"] = document.get("createTime")
+    return normalize_mttvalues_item(raw_item)
+
+
 def fetch_mttvalues_items_sync() -> list[dict]:
     items = []
     page_token = None
@@ -406,11 +414,7 @@ def fetch_mttvalues_items_sync() -> list[dict]:
             payload = json.loads(response.read().decode("utf-8"))
 
         for document in payload.get("documents", []):
-            raw_item = parse_firestore_fields(document.get("fields", {}))
-            raw_item["id"] = document.get("name", "").split("/")[-1]
-            raw_item["updateTime"] = document.get("updateTime")
-            raw_item["createTime"] = document.get("createTime")
-            item = normalize_mttvalues_item(raw_item)
+            item = item_from_firestore_document(document)
             if item.get("name") and (item.get("value_min") is not None or item.get("value_max") is not None):
                 items.append(item)
 
@@ -419,6 +423,16 @@ def fetch_mttvalues_items_sync() -> list[dict]:
             break
 
     return items
+
+
+def fetch_mttvalues_item_sync(item_id: str) -> dict:
+    url = f"{MTTVALUES_ITEMS_URL}/{quote(item_id, safe='')}"
+    request = Request(url, headers={"User-Agent": "MTTV Vote Bot"})
+
+    with urlopen(request, timeout=20) as response:
+        document = json.loads(response.read().decode("utf-8"))
+
+    return item_from_firestore_document(document)
 
 
 async def get_mttvalues_items() -> list[dict]:
@@ -445,7 +459,17 @@ async def get_random_mttvalues_item() -> dict | None:
     if not items:
         return None
 
-    return random.choice(items)
+    item = random.choice(items)
+    item_id = item.get("id")
+
+    if not item_id:
+        return item
+
+    try:
+        return await asyncio.to_thread(fetch_mttvalues_item_sync, str(item_id))
+    except Exception as error:
+        print(f"Could not refresh chosen MTTValues item {item_id}: {error}")
+        return item
 
 
 def format_number(value: object) -> str:
