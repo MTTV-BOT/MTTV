@@ -153,7 +153,9 @@ def apply_env_config_defaults() -> None:
 
     if not guild_config.get("interval_seconds"):
         updates["interval_seconds"] = interval_seconds
-        updates["next_vote_at"] = time.time() + interval_seconds
+
+    if "enabled" not in guild_config:
+        updates["enabled"] = False
 
     if updates:
         set_guild_config(guild_id, updates)
@@ -379,22 +381,26 @@ async def time_command(
         return
 
     interval_seconds = interval_to_seconds(amount, unit.value)
-    set_guild_config(
-        interaction.guild.id,
-        {
-            "interval_seconds": interval_seconds,
-            "next_vote_at": time.time() + interval_seconds,
-        },
-    )
+    updates = {"interval_seconds": interval_seconds}
+    if guild_config.get("enabled"):
+        updates["next_vote_at"] = time.time() + interval_seconds
 
-    await interaction.response.send_message(
-        f"New votes will be posted in {channel.mention} every {format_interval(interval_seconds)}.",
-        ephemeral=True,
-    )
+    set_guild_config(interaction.guild.id, updates)
+
+    if guild_config.get("enabled"):
+        await interaction.response.send_message(
+            f"Vote timer updated. New votes will be posted in {channel.mention} every {format_interval(interval_seconds)}.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.response.send_message(
+            f"Vote interval set to {format_interval(interval_seconds)}. Use `/votestart` to start counting.",
+            ephemeral=True,
+        )
 
 
-@bot.tree.command(name="vote_now", description="Post a vote immediately in the saved channel.")
-async def vote_now(interaction: discord.Interaction):
+@bot.tree.command(name="votestart", description="Start the automatic vote timer.")
+async def votestart(interaction: discord.Interaction):
     if not interaction.guild:
         await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
         return
@@ -408,6 +414,11 @@ async def vote_now(interaction: discord.Interaction):
         await interaction.response.send_message("Set a vote channel first with `/channel`.", ephemeral=True)
         return
 
+    interval_seconds = guild_config.get("interval_seconds")
+    if not interval_seconds:
+        await interaction.response.send_message("Set a vote interval first with `/time`.", ephemeral=True)
+        return
+
     channel = interaction.guild.get_channel(int(channel_id))
     if not isinstance(channel, discord.TextChannel):
         await interaction.response.send_message("The saved vote channel no longer exists. Set it again with `/channel`.", ephemeral=True)
@@ -418,9 +429,35 @@ async def vote_now(interaction: discord.Interaction):
         await interaction.response.send_message(error, ephemeral=True)
         return
 
-    message = await send_vote(channel)
-    remember_vote_message(interaction.guild.id, message.id)
-    await interaction.response.send_message(f"Vote posted in {channel.mention}.", ephemeral=True)
+    set_guild_config(
+        interaction.guild.id,
+        {
+            "enabled": True,
+            "next_vote_at": time.time() + int(interval_seconds),
+        },
+    )
+    await interaction.response.send_message(
+        f"Vote timer started. Next vote in {format_interval(int(interval_seconds))}.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="votestop", description="Stop the automatic vote timer.")
+async def votestop(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
+        return
+
+    if not await require_manage_guild(interaction):
+        return
+
+    guild_config = get_guild_config(interaction.guild.id)
+    if not guild_config.get("enabled"):
+        await interaction.response.send_message("Vote timer is already stopped.", ephemeral=True)
+        return
+
+    set_guild_config(interaction.guild.id, {"enabled": False, "next_vote_at": None})
+    await interaction.response.send_message("Vote timer stopped.", ephemeral=True)
 
 
 @bot.event
@@ -477,7 +514,15 @@ async def vote_worker():
             interval_seconds = guild_config.get("interval_seconds")
             next_vote_at = guild_config.get("next_vote_at")
 
-            if not channel_id or not interval_seconds or not next_vote_at:
+            if not guild_config.get("enabled"):
+                continue
+
+            if not channel_id or not interval_seconds:
+                continue
+
+            if not next_vote_at:
+                guild_config["next_vote_at"] = now + int(interval_seconds)
+                changed = True
                 continue
 
             if now < float(next_vote_at):
