@@ -454,12 +454,18 @@ async def setup_hook():
         try:
             guild = discord.Object(id=int(GUILD_ID))
             bot.tree.copy_global_to(guild=guild)
-            await bot.tree.sync(guild=guild)
+            guild_commands = await bot.tree.sync(guild=guild)
+            print(f"Synced {len(guild_commands)} guild command(s) for {GUILD_ID}.")
         except ValueError:
             print("GUILD_ID must be a number. Syncing global commands instead.")
-            await bot.tree.sync()
-    else:
-        await bot.tree.sync()
+        except discord.DiscordException as error:
+            print(f"Guild command sync failed: {error}")
+
+    try:
+        global_commands = await bot.tree.sync()
+        print(f"Synced {len(global_commands)} global command(s).")
+    except discord.DiscordException as error:
+        print(f"Global command sync failed: {error}")
 
     bot.loop.create_task(vote_worker())
 
