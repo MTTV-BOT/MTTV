@@ -8,7 +8,6 @@ from threading import Thread
 
 import discord
 from discord import app_commands
-from discord.ext import commands
 from dotenv import load_dotenv
 
 
@@ -33,9 +32,35 @@ GREEN_COLOR = 0x2ECC71
 RED_COLOR = 0xE74C3C
 MAX_TRACKED_VOTES = 200
 
-intents = discord.Intents.default()
-intents.reactions = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+class VoteBot(discord.Client):
+    def __init__(self) -> None:
+        intents = discord.Intents.default()
+        intents.reactions = True
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+
+    async def setup_hook(self) -> None:
+        if GUILD_ID:
+            try:
+                guild = discord.Object(id=int(GUILD_ID))
+                self.tree.copy_global_to(guild=guild)
+                guild_commands = await self.tree.sync(guild=guild)
+                print(f"Synced {len(guild_commands)} guild command(s) for {GUILD_ID}.")
+            except ValueError:
+                print("GUILD_ID must be a number. Syncing global commands instead.")
+            except discord.DiscordException as error:
+                print(f"Guild command sync failed: {error}")
+
+        try:
+            global_commands = await self.tree.sync()
+            print(f"Synced {len(global_commands)} global command(s).")
+        except discord.DiscordException as error:
+            print(f"Global command sync failed: {error}")
+
+        self.loop.create_task(vote_worker())
+
+
+bot = VoteBot()
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -446,28 +471,6 @@ async def vote_worker():
             save_config(config)
 
         await asyncio.sleep(10)
-
-
-@bot.event
-async def setup_hook():
-    if GUILD_ID:
-        try:
-            guild = discord.Object(id=int(GUILD_ID))
-            bot.tree.copy_global_to(guild=guild)
-            guild_commands = await bot.tree.sync(guild=guild)
-            print(f"Synced {len(guild_commands)} guild command(s) for {GUILD_ID}.")
-        except ValueError:
-            print("GUILD_ID must be a number. Syncing global commands instead.")
-        except discord.DiscordException as error:
-            print(f"Guild command sync failed: {error}")
-
-    try:
-        global_commands = await bot.tree.sync()
-        print(f"Synced {len(global_commands)} global command(s).")
-    except discord.DiscordException as error:
-        print(f"Global command sync failed: {error}")
-
-    bot.loop.create_task(vote_worker())
 
 
 @bot.event
