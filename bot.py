@@ -4,6 +4,7 @@ import json
 import os
 import random
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
@@ -41,9 +42,48 @@ GRAY_COLOR = 0x808080
 GREEN_COLOR = 0x2ECC71
 RED_COLOR = 0xE74C3C
 MAX_TRACKED_VOTES = 200
+SOURCE_SITE = "https://mttvalues.com/"
 MTTVALUES_ITEMS_URL = "https://firestore.googleapis.com/v1/projects/military-tycoon-trading-values/databases/(default)/documents/items"
 ITEM_CACHE_SECONDS = 900
 item_cache: dict[str, object] = {"items": [], "updated_at": 0.0}
+
+RARITY_STYLE_MAP = {
+    "Common": discord.ButtonStyle.primary,
+    "Rare": discord.ButtonStyle.primary,
+    "Legendary": discord.ButtonStyle.success,
+    "Epic": discord.ButtonStyle.primary,
+    "Exotic": discord.ButtonStyle.success,
+    "Limited": discord.ButtonStyle.danger,
+}
+
+TAG_STYLE_MAP = {
+    "rising": discord.ButtonStyle.success,
+    "stable": discord.ButtonStyle.primary,
+    "dropping": discord.ButtonStyle.danger,
+    "underpaid": discord.ButtonStyle.success,
+    "overpaid": discord.ButtonStyle.success,
+    "meta": discord.ButtonStyle.primary,
+    "unstable": discord.ButtonStyle.danger,
+}
+
+RARITY_EMOJI_MAP = {
+    "Common": "\u26aa",
+    "Rare": "\U0001f535",
+    "Legendary": "\U0001f7e1",
+    "Epic": "\U0001f7e3",
+    "Exotic": "\U0001f7e3",
+    "Limited": "\U0001f534",
+}
+
+TAG_EMOJI_MAP = {
+    "rising": "\U0001f7e2",
+    "stable": "\U0001f535",
+    "dropping": "\U0001f534",
+    "underpaid": "\U0001f7e2",
+    "overpaid": "\U0001f7e0",
+    "meta": "\U0001f7e3",
+    "unstable": "\U0001f534",
+}
 
 class VoteBot(discord.Client):
     def __init__(self) -> None:
@@ -283,6 +323,9 @@ def parse_firestore_value(value: dict) -> object:
     if "booleanValue" in value:
         return bool(value["booleanValue"])
 
+    if "nullValue" in value:
+        return None
+
     if "timestampValue" in value:
         return value["timestampValue"]
 
@@ -297,6 +340,54 @@ def parse_firestore_value(value: dict) -> object:
 
 def parse_firestore_fields(fields: dict) -> dict:
     return {key: parse_firestore_value(value) for key, value in fields.items()}
+
+
+def first_present(*values: object) -> object:
+    for value in values:
+        if value is not None:
+            return value
+
+    return None
+
+
+def parse_int(value: object) -> int | None:
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return None
+
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_string_list(values: object) -> list[str]:
+    if not isinstance(values, list):
+        values = [values] if values else []
+
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
+def normalize_mttvalues_item(raw_item: dict) -> dict:
+    value_min = first_present(raw_item.get("valueMin"), raw_item.get("value_min"), raw_item.get("value"))
+    value_max = first_present(raw_item.get("valueMax"), raw_item.get("value_max"), raw_item.get("value"))
+
+    return {
+        "id": str(raw_item.get("id", "")).strip(),
+        "name": str(raw_item.get("name", "Unknown Item")).strip() or "Unknown Item",
+        "description": str(raw_item.get("description", "")).strip(),
+        "image": str(raw_item.get("image", "")).strip(),
+        "value_min": parse_int(value_min),
+        "value_max": parse_int(value_max),
+        "demand": parse_int(raw_item.get("demand")),
+        "functionality": parse_int(raw_item.get("functionality")),
+        "tags": normalize_string_list(raw_item.get("tags")),
+        "rarity": normalize_string_list(raw_item.get("rarity")),
+        "updated_at": first_present(raw_item.get("updatedAt"), raw_item.get("updated_at"), raw_item.get("updateTime")),
+        "created_at": first_present(raw_item.get("createdAt"), raw_item.get("created_at"), raw_item.get("createTime")),
+    }
 
 
 def fetch_mttvalues_items_sync() -> list[dict]:
@@ -315,9 +406,12 @@ def fetch_mttvalues_items_sync() -> list[dict]:
             payload = json.loads(response.read().decode("utf-8"))
 
         for document in payload.get("documents", []):
-            item = parse_firestore_fields(document.get("fields", {}))
-            item["id"] = document.get("name", "").split("/")[-1]
-            if item.get("name") and (item.get("valueMin") is not None or item.get("valueMax") is not None or item.get("value") is not None):
+            raw_item = parse_firestore_fields(document.get("fields", {}))
+            raw_item["id"] = document.get("name", "").split("/")[-1]
+            raw_item["updateTime"] = document.get("updateTime")
+            raw_item["createTime"] = document.get("createTime")
+            item = normalize_mttvalues_item(raw_item)
+            if item.get("name") and (item.get("value_min") is not None or item.get("value_max") is not None):
                 items.append(item)
 
         page_token = payload.get("nextPageToken")
@@ -355,73 +449,202 @@ async def get_random_mttvalues_item() -> dict | None:
 
 
 def format_number(value: object) -> str:
-    if value is None:
+    number = parse_int(value)
+    if number is None:
         return "N/A"
 
+    return f"{number:,}"
+
+
+def average_value(item: dict) -> int | None:
+    value_min = parse_int(item.get("value_min"))
+    value_max = parse_int(item.get("value_max"))
+
+    if value_min is not None and value_max is not None:
+        return round((value_min + value_max) / 2)
+
+    return first_present(value_min, value_max)
+
+
+def format_value_range(item: dict) -> str:
+    value_min = parse_int(item.get("value_min"))
+    value_max = parse_int(item.get("value_max"))
+
+    if value_min is not None and value_max is not None:
+        if value_min == value_max:
+            return format_number(value_min)
+
+        return f"{format_number(value_min)} - {format_number(value_max)}"
+
+    if value_min is not None:
+        return format_number(value_min)
+
+    if value_max is not None:
+        return format_number(value_max)
+
+    return "No value listed"
+
+
+def format_score(value: object) -> str:
+    number = parse_int(value)
+    if number is None:
+        return "N/A"
+
+    return f"{number}/10"
+
+
+def parse_iso_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+
     try:
-        return f"{int(float(value)):,}"
-    except (TypeError, ValueError):
-        return str(value)
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
-def get_item_low_high(item: dict) -> tuple[object, object]:
-    low = item.get("valueMin")
-    high = item.get("valueMax")
+def rarity_color(item: dict) -> int:
+    rarity = item.get("rarity") or []
+    primary = rarity[0] if rarity else None
 
-    if low is None and high is None:
-        low = item.get("value")
-        high = item.get("value")
-    elif low is None:
-        low = high
-    elif high is None:
-        high = low
+    if primary == "Limited":
+        return 0xE74C3C
 
-    return low, high
+    if primary == "Exotic":
+        return 0x9B59B6
+
+    if primary == "Legendary":
+        return 0xF1C40F
+
+    if primary == "Rare":
+        return 0x3498DB
+
+    if primary == "Common":
+        return 0x95A5A6
+
+    return 0x5865F2
+
+
+def chip_label(chip_type: str, value: str) -> str:
+    if chip_type == "rarity":
+        emoji = RARITY_EMOJI_MAP.get(value, "\U0001f539")
+        return f"{emoji} {value}"
+
+    normalized = value.lower()
+    emoji = TAG_EMOJI_MAP.get(normalized, "\U0001f539")
+    return f"{emoji} {value.title()}"
+
+
+def chip_key(value: str) -> str:
+    parts = []
+
+    for char in value.lower():
+        if char.isalnum():
+            parts.append(char)
+        elif parts and parts[-1] != "-":
+            parts.append("-")
+
+    return "".join(parts).strip("-")[:80] or "chip"
+
+
+class ItemTagView(discord.ui.View):
+    def __init__(self, item: dict) -> None:
+        super().__init__(timeout=43200)
+
+        row = 0
+        column = 0
+        chips = []
+        chips.extend(("rarity", value) for value in item.get("rarity", []))
+        chips.extend(("tag", value) for value in item.get("tags", []))
+
+        for chip_type, value in chips[:20]:
+            if column == 5:
+                row += 1
+                column = 0
+
+            if row >= 4:
+                break
+
+            style = (
+                RARITY_STYLE_MAP.get(value, discord.ButtonStyle.primary)
+                if chip_type == "rarity"
+                else TAG_STYLE_MAP.get(value.lower(), discord.ButtonStyle.primary)
+            )
+            self.add_item(
+                PassiveTagButton(
+                    label=chip_label(chip_type, value),
+                    style=style,
+                    row=row,
+                    custom_id=f"value-chip:{chip_type}:{chip_key(value)}",
+                )
+            )
+            column += 1
+
+
+class PassiveTagButton(discord.ui.Button):
+    def __init__(
+        self,
+        *,
+        label: str,
+        style: discord.ButtonStyle,
+        row: int,
+        custom_id: str,
+    ) -> None:
+        super().__init__(label=label, style=style, row=row, custom_id=custom_id)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+
+
+def create_tag_view(item: dict | None) -> ItemTagView | None:
+    if not item:
+        return None
+
+    chips = [*item.get("rarity", []), *item.get("tags", [])]
+    if not chips:
+        return None
+
+    return ItemTagView(item)
 
 
 def create_vote_embed(
-    color: int = GRAY_COLOR,
+    color: int | None = None,
     counts: dict[str, int] | None = None,
     item: dict | None = None,
 ) -> discord.Embed:
     counts = counts or empty_vote_counts()
 
     if item:
-        low, high = get_item_low_high(item)
         embed = discord.Embed(
-            title=f"Value vote: {item.get('name', VOTE_TEXT)}",
-            description=(
-                "Should this value go up, stay the same, or go down?\n\n"
-                f"{format_vote_counts(counts)}"
-            ),
-            color=discord.Color(color),
+            title=item.get("name", VOTE_TEXT),
+            color=discord.Color(color if color is not None else rarity_color(item)),
+            url=SOURCE_SITE,
         )
-        embed.add_field(name="Low", value=format_number(low), inline=True)
-        embed.add_field(name="High", value=format_number(high), inline=True)
 
-        demand = item.get("demand")
-        if demand is not None:
-            embed.add_field(name="Demand", value=str(demand), inline=True)
+        embed.add_field(name="Value Range", value=format_value_range(item), inline=True)
+        embed.add_field(name="Average Value", value=format_number(average_value(item)), inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        embed.add_field(name="Demand", value=format_score(item.get("demand")), inline=True)
+        embed.add_field(name="Functionality", value=format_score(item.get("functionality")), inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
 
-        rarity = item.get("rarity")
-        if isinstance(rarity, list) and rarity:
-            embed.add_field(name="Rarity", value=", ".join(str(value) for value in rarity), inline=False)
-
-        tags = item.get("tags")
-        if isinstance(tags, list) and tags:
-            embed.add_field(name="Tags", value=", ".join(str(value) for value in tags), inline=False)
-
-        image = item.get("image")
+        image = item.get("image", "")
         if isinstance(image, str) and image.startswith("http"):
-            embed.set_thumbnail(url=image)
+            embed.set_image(url=image)
 
-        embed.set_footer(text=f"{UPVOTE} raise value  {NEUTRAL_VOTE} keep value  {DOWNVOTE} lower value | Source: mttvalues.com")
+        updated_at = parse_iso_datetime(item.get("updated_at"))
+        if updated_at:
+            embed.timestamp = updated_at
+            embed.set_footer(text="Source: mttvalues.com | Last updated")
+        else:
+            embed.set_footer(text="Source: mttvalues.com")
+
         return embed
 
     return discord.Embed(
         title=VOTE_TEXT,
         description=format_vote_counts(counts),
-        color=discord.Color(color),
+        color=discord.Color(color if color is not None else GRAY_COLOR),
     )
 
 
@@ -461,6 +684,10 @@ async def update_vote_color(message: discord.Message) -> None:
     color = get_vote_color(counts)
     embed = message.embeds[0].copy() if message.embeds else create_vote_embed()
     embed.color = discord.Color(color)
+    if getattr(embed, "url", None) == SOURCE_SITE:
+        await message.edit(embed=embed)
+        return
+
     if embed.description and "Should this value" in embed.description:
         embed.description = (
             "Should this value go up, stay the same, or go down?\n\n"
@@ -473,7 +700,8 @@ async def update_vote_color(message: discord.Message) -> None:
 
 async def send_vote(channel: discord.abc.Messageable) -> discord.Message:
     item = await get_random_mttvalues_item()
-    message = await channel.send(embed=create_vote_embed(item=item))
+    view = create_tag_view(item)
+    message = await channel.send(embed=create_vote_embed(item=item), view=view)
 
     for reaction in VOTE_REACTIONS:
         await message.add_reaction(reaction)
