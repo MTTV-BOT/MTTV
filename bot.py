@@ -4,7 +4,6 @@ import json
 import os
 import random
 import time
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
@@ -37,62 +36,26 @@ VOTE_TEXT = ENV_VOTE_TEXT or "vote"
 UPVOTE = "\u2b06\ufe0f"
 NEUTRAL_VOTE = "\u2194\ufe0f"
 DOWNVOTE = "\u2b07\ufe0f"
-VOTE_REACTIONS = (UPVOTE, NEUTRAL_VOTE, DOWNVOTE)
+HIGHER_CHOICE = "higher"
+STAY_CHOICE = "stay"
+LOWER_CHOICE = "lower"
+VOTE_BUTTON_CHOICES = (HIGHER_CHOICE, STAY_CHOICE, LOWER_CHOICE)
 GRAY_COLOR = 0x808080
 GREEN_COLOR = 0x2ECC71
 RED_COLOR = 0xE74C3C
 MAX_TRACKED_VOTES = 200
-SOURCE_SITE = "https://mttvalues.com/"
 MTTVALUES_ITEMS_URL = "https://firestore.googleapis.com/v1/projects/military-tycoon-trading-values/databases/(default)/documents/items"
 ITEM_CACHE_SECONDS = 900
 item_cache: dict[str, object] = {"items": [], "updated_at": 0.0}
 
-RARITY_STYLE_MAP = {
-    "Common": discord.ButtonStyle.primary,
-    "Rare": discord.ButtonStyle.primary,
-    "Legendary": discord.ButtonStyle.success,
-    "Epic": discord.ButtonStyle.primary,
-    "Exotic": discord.ButtonStyle.success,
-    "Limited": discord.ButtonStyle.danger,
-}
-
-TAG_STYLE_MAP = {
-    "rising": discord.ButtonStyle.success,
-    "stable": discord.ButtonStyle.primary,
-    "dropping": discord.ButtonStyle.danger,
-    "underpaid": discord.ButtonStyle.success,
-    "overpaid": discord.ButtonStyle.success,
-    "meta": discord.ButtonStyle.primary,
-    "unstable": discord.ButtonStyle.danger,
-}
-
-RARITY_EMOJI_MAP = {
-    "Common": "\u26aa",
-    "Rare": "\U0001f535",
-    "Legendary": "\U0001f7e1",
-    "Epic": "\U0001f7e3",
-    "Exotic": "\U0001f7e3",
-    "Limited": "\U0001f534",
-}
-
-TAG_EMOJI_MAP = {
-    "rising": "\U0001f7e2",
-    "stable": "\U0001f535",
-    "dropping": "\U0001f534",
-    "underpaid": "\U0001f7e2",
-    "overpaid": "\U0001f7e0",
-    "meta": "\U0001f7e3",
-    "unstable": "\U0001f534",
-}
-
 class VoteBot(discord.Client):
     def __init__(self) -> None:
         intents = discord.Intents.default()
-        intents.reactions = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self) -> None:
+        self.add_view(VoteButtonView())
         command_names = [command.name for command in self.tree.get_commands()]
         print(f"Registered local command(s): {', '.join(command_names)}")
 
@@ -214,6 +177,15 @@ def store_vote_message_id(guild_config: dict, message_id: int) -> None:
 
     message_ids.append(str(message_id))
     guild_config["vote_message_ids"] = message_ids[-MAX_TRACKED_VOTES:]
+    tracked_ids = {str(saved_id) for saved_id in guild_config["vote_message_ids"]}
+    button_votes = guild_config.get("button_votes", {})
+
+    if isinstance(button_votes, dict):
+        guild_config["button_votes"] = {
+            str(saved_id): votes
+            for saved_id, votes in button_votes.items()
+            if str(saved_id) in tracked_ids
+        }
 
 
 def remember_vote_message(guild_id: int, message_id: int) -> None:
@@ -254,18 +226,6 @@ def format_interval(seconds: int) -> str:
     return f"{amount} {unit}"
 
 
-def normalize_emoji(emoji: object) -> str:
-    return str(emoji).replace("\ufe0f", "")
-
-
-def empty_vote_counts() -> dict[str, int]:
-    return {
-        normalize_emoji(UPVOTE): 0,
-        normalize_emoji(NEUTRAL_VOTE): 0,
-        normalize_emoji(DOWNVOTE): 0,
-    }
-
-
 def bot_can_vote_in(channel: discord.TextChannel, guild: discord.Guild) -> tuple[bool, str]:
     permissions = channel.permissions_for(guild.me)
 
@@ -274,12 +234,6 @@ def bot_can_vote_in(channel: discord.TextChannel, guild: discord.Guild) -> tuple
 
     if not permissions.embed_links:
         return False, f"I cannot send embeds in {channel.mention}."
-
-    if not permissions.add_reactions:
-        return False, f"I cannot add reactions in {channel.mention}."
-
-    if not permissions.read_message_history:
-        return False, f"I cannot read message history in {channel.mention}."
 
     return True, ""
 
@@ -302,12 +256,40 @@ async def require_manage_guild(interaction: discord.Interaction) -> bool:
     return False
 
 
-def format_vote_counts(counts: dict[str, int]) -> str:
-    return (
-        f"{UPVOTE} {counts[normalize_emoji(UPVOTE)]}   "
-        f"{NEUTRAL_VOTE} {counts[normalize_emoji(NEUTRAL_VOTE)]}   "
-        f"{DOWNVOTE} {counts[normalize_emoji(DOWNVOTE)]}"
-    )
+def empty_button_vote_counts() -> dict[str, int]:
+    return {choice: 0 for choice in VOTE_BUTTON_CHOICES}
+
+
+def count_button_votes(votes: dict) -> dict[str, int]:
+    counts = empty_button_vote_counts()
+
+    for choice in votes.values():
+        if choice in counts:
+            counts[choice] += 1
+
+    return counts
+
+
+def set_button_vote(guild_id: int, message_id: int, user_id: int, choice: str) -> dict[str, int]:
+    config = load_config()
+    guild_key = str(guild_id)
+    message_key = str(message_id)
+    guild_config = config.get(guild_key, {})
+    button_votes = guild_config.get("button_votes", {})
+
+    if not isinstance(button_votes, dict):
+        button_votes = {}
+
+    message_votes = button_votes.get(message_key, {})
+    if not isinstance(message_votes, dict):
+        message_votes = {}
+
+    message_votes[str(user_id)] = choice
+    button_votes[message_key] = message_votes
+    guild_config["button_votes"] = button_votes
+    config[guild_key] = guild_config
+    save_config(config)
+    return count_button_votes(message_votes)
 
 
 def parse_firestore_value(value: dict) -> object:
@@ -517,132 +499,31 @@ def format_score(value: object) -> str:
     return f"{number}/10"
 
 
-def parse_iso_datetime(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
+class VoteButtonView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
 
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    @discord.ui.button(label=f"Higher {UPVOTE}", style=discord.ButtonStyle.success, custom_id="mttv-vote:higher")
+    async def higher(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await handle_vote_button(interaction, HIGHER_CHOICE)
 
+    @discord.ui.button(label=f"Stay {NEUTRAL_VOTE}", style=discord.ButtonStyle.secondary, custom_id="mttv-vote:stay")
+    async def stay(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await handle_vote_button(interaction, STAY_CHOICE)
 
-def rarity_color(item: dict) -> int:
-    rarity = item.get("rarity") or []
-    primary = rarity[0] if rarity else None
-
-    if primary == "Limited":
-        return 0xE74C3C
-
-    if primary == "Exotic":
-        return 0x9B59B6
-
-    if primary == "Legendary":
-        return 0xF1C40F
-
-    if primary == "Rare":
-        return 0x3498DB
-
-    if primary == "Common":
-        return 0x95A5A6
-
-    return 0x5865F2
-
-
-def chip_label(chip_type: str, value: str) -> str:
-    if chip_type == "rarity":
-        emoji = RARITY_EMOJI_MAP.get(value, "\U0001f539")
-        return f"{emoji} {value}"
-
-    normalized = value.lower()
-    emoji = TAG_EMOJI_MAP.get(normalized, "\U0001f539")
-    return f"{emoji} {value.title()}"
-
-
-def chip_key(value: str) -> str:
-    parts = []
-
-    for char in value.lower():
-        if char.isalnum():
-            parts.append(char)
-        elif parts and parts[-1] != "-":
-            parts.append("-")
-
-    return "".join(parts).strip("-")[:80] or "chip"
-
-
-class ItemTagView(discord.ui.View):
-    def __init__(self, item: dict) -> None:
-        super().__init__(timeout=43200)
-
-        row = 0
-        column = 0
-        chips = []
-        chips.extend(("rarity", value) for value in item.get("rarity", []))
-        chips.extend(("tag", value) for value in item.get("tags", []))
-
-        for chip_type, value in chips[:20]:
-            if column == 5:
-                row += 1
-                column = 0
-
-            if row >= 4:
-                break
-
-            style = (
-                RARITY_STYLE_MAP.get(value, discord.ButtonStyle.primary)
-                if chip_type == "rarity"
-                else TAG_STYLE_MAP.get(value.lower(), discord.ButtonStyle.primary)
-            )
-            self.add_item(
-                PassiveTagButton(
-                    label=chip_label(chip_type, value),
-                    style=style,
-                    row=row,
-                    custom_id=f"value-chip:{chip_type}:{chip_key(value)}",
-                )
-            )
-            column += 1
-
-
-class PassiveTagButton(discord.ui.Button):
-    def __init__(
-        self,
-        *,
-        label: str,
-        style: discord.ButtonStyle,
-        row: int,
-        custom_id: str,
-    ) -> None:
-        super().__init__(label=label, style=style, row=row, custom_id=custom_id)
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-
-
-def create_tag_view(item: dict | None) -> ItemTagView | None:
-    if not item:
-        return None
-
-    chips = [*item.get("rarity", []), *item.get("tags", [])]
-    if not chips:
-        return None
-
-    return ItemTagView(item)
+    @discord.ui.button(label=f"Lower {DOWNVOTE}", style=discord.ButtonStyle.danger, custom_id="mttv-vote:lower")
+    async def lower(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await handle_vote_button(interaction, LOWER_CHOICE)
 
 
 def create_vote_embed(
     color: int | None = None,
-    counts: dict[str, int] | None = None,
     item: dict | None = None,
 ) -> discord.Embed:
-    counts = counts or empty_vote_counts()
-
     if item:
         embed = discord.Embed(
             title=item.get("name", VOTE_TEXT),
-            color=discord.Color(color if color is not None else rarity_color(item)),
-            url=SOURCE_SITE,
+            color=discord.Color(color if color is not None else GRAY_COLOR),
         )
 
         embed.add_field(name="Value Range", value=format_value_range(item), inline=True)
@@ -656,79 +537,47 @@ def create_vote_embed(
         if isinstance(image, str) and image.startswith("http"):
             embed.set_image(url=image)
 
-        updated_at = parse_iso_datetime(item.get("updated_at"))
-        if updated_at:
-            embed.timestamp = updated_at
-            embed.set_footer(text="Source: mttvalues.com | Last updated")
-        else:
-            embed.set_footer(text="Source: mttvalues.com")
-
         return embed
 
     return discord.Embed(
         title=VOTE_TEXT,
-        description=format_vote_counts(counts),
         color=discord.Color(color if color is not None else GRAY_COLOR),
     )
 
 
-def get_vote_counts(message: discord.Message) -> dict[str, int]:
-    counts = empty_vote_counts()
+def get_button_vote_color(counts: dict[str, int]) -> int:
+    higher_votes = counts.get(HIGHER_CHOICE, 0)
+    stay_votes = counts.get(STAY_CHOICE, 0)
+    lower_votes = counts.get(LOWER_CHOICE, 0)
 
-    for reaction in message.reactions:
-        emoji = normalize_emoji(reaction.emoji)
-        if emoji not in counts:
-            continue
-
-        bot_reaction = 1 if reaction.me else 0
-        counts[emoji] = max(reaction.count - bot_reaction, 0)
-
-    return counts
-
-
-def get_vote_color(counts: dict[str, int]) -> int:
-    upvotes = counts[normalize_emoji(UPVOTE)]
-    neutral_votes = counts[normalize_emoji(NEUTRAL_VOTE)]
-    downvotes = counts[normalize_emoji(DOWNVOTE)]
-
-    if neutral_votes >= upvotes and neutral_votes >= downvotes:
+    if stay_votes >= higher_votes and stay_votes >= lower_votes:
         return GRAY_COLOR
 
-    if upvotes == downvotes:
+    if higher_votes == lower_votes:
         return GRAY_COLOR
 
-    if upvotes > downvotes:
+    if higher_votes > lower_votes:
         return GREEN_COLOR
 
     return RED_COLOR
 
 
-async def update_vote_color(message: discord.Message) -> None:
-    counts = get_vote_counts(message)
-    color = get_vote_color(counts)
-    embed = message.embeds[0].copy() if message.embeds else create_vote_embed()
-    embed.color = discord.Color(color)
-    if getattr(embed, "url", None) == SOURCE_SITE:
-        await message.edit(embed=embed)
+async def handle_vote_button(interaction: discord.Interaction, choice: str) -> None:
+    if not interaction.guild or not interaction.message:
+        await interaction.response.defer()
         return
 
-    if embed.description and "Should this value" in embed.description:
-        embed.description = (
-            "Should this value go up, stay the same, or go down?\n\n"
-            f"{format_vote_counts(counts)}"
-        )
-    else:
-        embed.description = format_vote_counts(counts)
-    await message.edit(embed=embed)
+    counts = set_button_vote(interaction.guild.id, interaction.message.id, interaction.user.id, choice)
+    color = get_button_vote_color(counts)
+    embed = interaction.message.embeds[0].copy() if interaction.message.embeds else create_vote_embed()
+    embed.color = discord.Color(color)
+    await interaction.response.edit_message(embed=embed, view=VoteButtonView())
 
 
 async def send_vote(channel: discord.abc.Messageable) -> discord.Message:
     item = await get_random_mttvalues_item()
-    view = create_tag_view(item)
+    view = VoteButtonView()
     message = await channel.send(embed=create_vote_embed(item=item), view=view)
-
-    for reaction in VOTE_REACTIONS:
-        await message.add_reaction(reaction)
 
     return message
 
@@ -870,46 +719,6 @@ async def votestop(interaction: discord.Interaction):
 
     set_guild_config(interaction.guild.id, {"enabled": False, "next_vote_at": None})
     await interaction.response.send_message("Vote timer stopped.", ephemeral=True)
-
-
-@bot.event
-async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    await handle_vote_reaction(payload)
-
-
-@bot.event
-async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
-    await handle_vote_reaction(payload)
-
-
-async def handle_vote_reaction(payload: discord.RawReactionActionEvent) -> None:
-    if payload.guild_id is None:
-        return
-
-    if bot.user and payload.user_id == bot.user.id:
-        return
-
-    if normalize_emoji(payload.emoji) not in {normalize_emoji(reaction) for reaction in VOTE_REACTIONS}:
-        return
-
-    if not is_tracked_vote_message(payload.guild_id, payload.message_id):
-        return
-
-    channel = bot.get_channel(payload.channel_id)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(payload.channel_id)
-        except discord.DiscordException:
-            return
-
-    if not hasattr(channel, "fetch_message"):
-        return
-
-    try:
-        message = await channel.fetch_message(payload.message_id)
-        await update_vote_color(message)
-    except discord.DiscordException as error:
-        print(f"Could not update vote color for message {payload.message_id}: {error}")
 
 
 async def vote_worker():
