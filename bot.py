@@ -500,8 +500,17 @@ def format_score(value: object) -> str:
 
 
 class VoteButtonView(discord.ui.View):
-    def __init__(self) -> None:
+    def __init__(self, counts: dict[str, int] | None = None) -> None:
         super().__init__(timeout=None)
+        counts = counts or empty_button_vote_counts()
+
+        for child in self.children:
+            if child.custom_id == "mttv-vote:higher":
+                child.label = f"Higher {UPVOTE} {counts.get(HIGHER_CHOICE, 0)}"
+            elif child.custom_id == "mttv-vote:stay":
+                child.label = f"Stay {NEUTRAL_VOTE} {counts.get(STAY_CHOICE, 0)}"
+            elif child.custom_id == "mttv-vote:lower":
+                child.label = f"Lower {DOWNVOTE} {counts.get(LOWER_CHOICE, 0)}"
 
     @discord.ui.button(label=f"Higher {UPVOTE}", style=discord.ButtonStyle.success, custom_id="mttv-vote:higher")
     async def higher(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -546,20 +555,21 @@ def create_vote_embed(
 
 
 def get_button_vote_color(counts: dict[str, int]) -> int:
-    higher_votes = counts.get(HIGHER_CHOICE, 0)
-    stay_votes = counts.get(STAY_CHOICE, 0)
-    lower_votes = counts.get(LOWER_CHOICE, 0)
-
-    if stay_votes >= higher_votes and stay_votes >= lower_votes:
+    max_votes = max(counts.get(choice, 0) for choice in VOTE_BUTTON_CHOICES)
+    if max_votes == 0:
         return GRAY_COLOR
 
-    if higher_votes == lower_votes:
+    winners = [choice for choice in VOTE_BUTTON_CHOICES if counts.get(choice, 0) == max_votes]
+    if len(winners) != 1:
         return GRAY_COLOR
 
-    if higher_votes > lower_votes:
+    if winners[0] == HIGHER_CHOICE:
         return GREEN_COLOR
 
-    return RED_COLOR
+    if winners[0] == LOWER_CHOICE:
+        return RED_COLOR
+
+    return GRAY_COLOR
 
 
 async def handle_vote_button(interaction: discord.Interaction, choice: str) -> None:
@@ -571,12 +581,12 @@ async def handle_vote_button(interaction: discord.Interaction, choice: str) -> N
     color = get_button_vote_color(counts)
     embed = interaction.message.embeds[0].copy() if interaction.message.embeds else create_vote_embed()
     embed.color = discord.Color(color)
-    await interaction.response.edit_message(embed=embed, view=VoteButtonView())
+    await interaction.response.edit_message(embed=embed, view=VoteButtonView(counts))
 
 
 async def send_vote(channel: discord.abc.Messageable) -> discord.Message:
     item = await get_random_mttvalues_item()
-    view = VoteButtonView()
+    view = VoteButtonView(empty_button_vote_counts())
     message = await channel.send(embed=create_vote_embed(item=item), view=view)
 
     return message
