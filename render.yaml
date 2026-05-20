@@ -8,13 +8,17 @@ services:
     healthCheckPath: /
     autoDeploy: true
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: PYTHONUNBUFFERED
+        value: "1"
       - key: DISCORD_TOKEN
         sync: false
       - key: GUILD_ID
         sync: false
       - key: VOTE_CHANNEL_ID
         sync: false
-      - key: VOTE_INTERVAL_SECONDS
+      - key: VOTE_INTERVAL_MINUTES
         sync: false
       - key: VOTE_TEXT
         value: vote
