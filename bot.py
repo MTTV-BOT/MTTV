@@ -27,6 +27,7 @@ TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 GUILD_ID = os.getenv("GUILD_ID", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
 ENV_CHANNEL_ID = os.getenv("VOTE_CHANNEL_ID", "").strip()
+ENV_INTERVAL_MINUTES = os.getenv("VOTE_INTERVAL_MINUTES", "").strip()
 ENV_INTERVAL_SECONDS = os.getenv("VOTE_INTERVAL_SECONDS", "").strip()
 ENV_VOTE_TEXT = os.getenv("VOTE_TEXT", "").strip()
 
@@ -47,6 +48,7 @@ MAX_TRACKED_VOTES = 200
 MTTVALUES_ITEMS_URL = "https://firestore.googleapis.com/v1/projects/military-tycoon-trading-values/databases/(default)/documents/items"
 ITEM_CACHE_SECONDS = 900
 item_cache: dict[str, object] = {"items": [], "updated_at": 0.0}
+
 
 class VoteBot(discord.Client):
     def __init__(self) -> None:
@@ -139,19 +141,27 @@ def set_guild_config(guild_id: int, updates: dict) -> dict:
 
 
 def apply_env_config_defaults() -> None:
-    if not GUILD_ID or not ENV_CHANNEL_ID or not ENV_INTERVAL_SECONDS:
+    if not GUILD_ID or not ENV_CHANNEL_ID or not (ENV_INTERVAL_MINUTES or ENV_INTERVAL_SECONDS):
         return
 
     try:
         guild_id = int(GUILD_ID)
         channel_id = int(ENV_CHANNEL_ID)
-        interval_seconds = int(ENV_INTERVAL_SECONDS)
     except ValueError:
-        print("GUILD_ID, VOTE_CHANNEL_ID, and VOTE_INTERVAL_SECONDS must be numbers.")
+        print("GUILD_ID and VOTE_CHANNEL_ID must be numbers.")
+        return
+
+    try:
+        if ENV_INTERVAL_MINUTES:
+            interval_seconds = int(ENV_INTERVAL_MINUTES) * 60
+        else:
+            interval_seconds = int(ENV_INTERVAL_SECONDS)
+    except ValueError:
+        print("VOTE_INTERVAL_MINUTES and VOTE_INTERVAL_SECONDS must be numbers.")
         return
 
     if interval_seconds < 1:
-        print("VOTE_INTERVAL_SECONDS must be at least 1.")
+        print("Vote interval must be at least 1.")
         return
 
     guild_config = get_guild_config(guild_id)
@@ -181,42 +191,19 @@ def store_vote_message_id(guild_config: dict, message_id: int) -> None:
     button_votes = guild_config.get("button_votes", {})
 
     if isinstance(button_votes, dict):
-        guild_config["button_votes"] = {
+        kept_votes = {
             str(saved_id): votes
             for saved_id, votes in button_votes.items()
             if str(saved_id) in tracked_ids
         }
-
-
-def remember_vote_message(guild_id: int, message_id: int) -> None:
-    config = load_config()
-    guild_key = str(guild_id)
-    guild_config = config.get(guild_key, {})
-    store_vote_message_id(guild_config, message_id)
-    config[guild_key] = guild_config
-    save_config(config)
-
-
-def is_tracked_vote_message(guild_id: int, message_id: int) -> bool:
-    guild_config = get_guild_config(guild_id)
-    message_ids = guild_config.get("vote_message_ids", [])
-    return str(message_id) in {str(saved_id) for saved_id in message_ids}
-
-
-def interval_to_seconds(amount: int, unit: str) -> int:
-    multipliers = {
-        "seconds": 1,
-        "minutes": 60,
-        "hours": 60 * 60,
-    }
-    return amount * multipliers[unit]
+        kept_votes.setdefault(str(message_id), {})
+        guild_config["button_votes"] = kept_votes
+    else:
+        guild_config["button_votes"] = {str(message_id): {}}
 
 
 def format_interval(seconds: int) -> str:
-    if seconds % 3600 == 0:
-        amount = seconds // 3600
-        unit = "hour" if amount == 1 else "hours"
-    elif seconds % 60 == 0:
+    if seconds % 60 == 0:
         amount = seconds // 60
         unit = "minute" if amount == 1 else "minutes"
     else:
@@ -268,6 +255,28 @@ def count_button_votes(votes: dict) -> dict[str, int]:
             counts[choice] += 1
 
     return counts
+
+
+def get_stored_button_counts(guild_id: int, message_id: int) -> dict[str, int]:
+    guild_config = get_guild_config(guild_id)
+    button_votes = guild_config.get("button_votes", {})
+
+    if not isinstance(button_votes, dict):
+        return empty_button_vote_counts()
+
+    message_votes = button_votes.get(str(message_id), {})
+    if not isinstance(message_votes, dict):
+        return empty_button_vote_counts()
+
+    return count_button_votes(message_votes)
+
+
+def total_button_votes(counts: dict[str, int]) -> int:
+    return sum(counts.get(choice, 0) for choice in VOTE_BUTTON_CHOICES)
+
+
+def apply_vote_count_footer(embed: discord.Embed, counts: dict[str, int]) -> None:
+    embed.set_footer(text=f"Votes: {total_button_votes(counts)}")
 
 
 def set_button_vote(guild_id: int, message_id: int, user_id: int, choice: str) -> dict[str, int]:
@@ -500,7 +509,7 @@ def format_score(value: object) -> str:
 
 
 class VoteButtonView(discord.ui.View):
-    def __init__(self, counts: dict[str, int] | None = None) -> None:
+    def __init__(self, counts: dict[str, int] | None = None, disabled: bool = False) -> None:
         super().__init__(timeout=None)
         counts = counts or empty_button_vote_counts()
 
@@ -511,6 +520,8 @@ class VoteButtonView(discord.ui.View):
                 child.label = f"Stay {NEUTRAL_VOTE} {counts.get(STAY_CHOICE, 0)}"
             elif child.custom_id == "mttv-vote:lower":
                 child.label = f"Lower {DOWNVOTE} {counts.get(LOWER_CHOICE, 0)}"
+
+            child.disabled = disabled
 
     @discord.ui.button(label=f"Higher {UPVOTE}", style=discord.ButtonStyle.success, custom_id="mttv-vote:higher")
     async def higher(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -546,12 +557,15 @@ def create_vote_embed(
         if isinstance(image, str) and image.startswith("http"):
             embed.set_image(url=image)
 
+        apply_vote_count_footer(embed, empty_button_vote_counts())
         return embed
 
-    return discord.Embed(
+    embed = discord.Embed(
         title=VOTE_TEXT,
         color=discord.Color(color if color is not None else GRAY_COLOR),
     )
+    apply_vote_count_footer(embed, empty_button_vote_counts())
+    return embed
 
 
 def get_button_vote_color(counts: dict[str, int]) -> int:
@@ -577,10 +591,22 @@ async def handle_vote_button(interaction: discord.Interaction, choice: str) -> N
         await interaction.response.defer()
         return
 
+    guild_config = get_guild_config(interaction.guild.id)
+    active_message_id = guild_config.get("active_vote_message_id")
+
+    if active_message_id and str(interaction.message.id) != str(active_message_id):
+        counts = get_stored_button_counts(interaction.guild.id, interaction.message.id)
+        embed = interaction.message.embeds[0].copy() if interaction.message.embeds else create_vote_embed()
+        embed.color = discord.Color(get_button_vote_color(counts))
+        apply_vote_count_footer(embed, counts)
+        await interaction.response.edit_message(embed=embed, view=VoteButtonView(counts, disabled=True))
+        return
+
     counts = set_button_vote(interaction.guild.id, interaction.message.id, interaction.user.id, choice)
     color = get_button_vote_color(counts)
     embed = interaction.message.embeds[0].copy() if interaction.message.embeds else create_vote_embed()
     embed.color = discord.Color(color)
+    apply_vote_count_footer(embed, counts)
     await interaction.response.edit_message(embed=embed, view=VoteButtonView(counts))
 
 
@@ -590,6 +616,23 @@ async def send_vote(channel: discord.abc.Messageable) -> discord.Message:
     message = await channel.send(embed=create_vote_embed(item=item), view=view)
 
     return message
+
+
+async def disable_vote_buttons_for_message(guild_id: int, channel_id: int, message_id: int) -> None:
+    channel = bot.get_channel(channel_id)
+
+    if channel is None:
+        channel = await bot.fetch_channel(channel_id)
+
+    if not hasattr(channel, "fetch_message"):
+        return
+
+    message = await channel.fetch_message(message_id)
+    counts = get_stored_button_counts(guild_id, message_id)
+    embed = message.embeds[0].copy() if message.embeds else create_vote_embed()
+    embed.color = discord.Color(get_button_vote_color(counts))
+    apply_vote_count_footer(embed, counts)
+    await message.edit(embed=embed, view=VoteButtonView(counts, disabled=True))
 
 
 @bot.tree.command(name="channel", description="Choose the channel for automatic votes.")
@@ -612,21 +655,10 @@ async def channel(interaction: discord.Interaction, channel: discord.TextChannel
 
 
 @bot.tree.command(name="time", description="Set how often a new vote should be posted.")
-@app_commands.describe(
-    amount="The number of seconds, minutes, or hours to wait between votes.",
-    unit="The time unit for amount.",
-)
-@app_commands.choices(
-    unit=[
-        app_commands.Choice(name="seconds", value="seconds"),
-        app_commands.Choice(name="minutes", value="minutes"),
-        app_commands.Choice(name="hours", value="hours"),
-    ]
-)
+@app_commands.describe(amount="The number of minutes to wait between votes.")
 async def time_command(
     interaction: discord.Interaction,
     amount: app_commands.Range[int, 1, 100000],
-    unit: app_commands.Choice[str],
 ):
     if not interaction.guild:
         await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
@@ -651,7 +683,7 @@ async def time_command(
         await interaction.response.send_message(error, ephemeral=True)
         return
 
-    interval_seconds = interval_to_seconds(amount, unit.value)
+    interval_seconds = amount * 60
     updates = {"interval_seconds": interval_seconds}
     if guild_config.get("enabled"):
         updates["next_vote_at"] = time.time() + interval_seconds
@@ -741,9 +773,21 @@ async def vote_worker():
         changed = False
 
         for guild_id, guild_config in config.items():
+            try:
+                guild_int = int(guild_id)
+            except ValueError:
+                continue
+
             channel_id = guild_config.get("channel_id")
             interval_seconds = guild_config.get("interval_seconds")
             next_vote_at = guild_config.get("next_vote_at")
+            previous_message_id = guild_config.get("active_vote_message_id")
+            previous_channel_id = guild_config.get("active_vote_channel_id") or channel_id
+
+            if not previous_message_id:
+                message_ids = guild_config.get("vote_message_ids", [])
+                if isinstance(message_ids, list) and message_ids:
+                    previous_message_id = message_ids[-1]
 
             if not guild_config.get("enabled"):
                 continue
@@ -774,11 +818,24 @@ async def vote_worker():
                 continue
 
             store_vote_message_id(guild_config, message.id)
+            guild_config["active_vote_message_id"] = str(message.id)
+            guild_config["active_vote_channel_id"] = str(getattr(channel, "id", channel_id))
+
             while float(next_vote_at) <= now:
                 next_vote_at = float(next_vote_at) + int(interval_seconds)
 
             guild_config["next_vote_at"] = next_vote_at
             changed = True
+            save_config(config)
+            changed = False
+
+            if previous_message_id and str(previous_message_id) != str(message.id):
+                try:
+                    await disable_vote_buttons_for_message(guild_int, int(previous_channel_id), int(previous_message_id))
+                except (TypeError, ValueError):
+                    print(f"Could not disable old vote for guild {guild_id}: saved message data is invalid.")
+                except discord.DiscordException as error:
+                    print(f"Could not disable old vote for guild {guild_id}: {error}")
 
         if changed:
             save_config(config)
