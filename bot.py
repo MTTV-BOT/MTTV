@@ -787,6 +787,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> Non
 
 
 @bot.tree.command(name="channel", description="Choose the channel for automatic votes.")
+@app_commands.default_permissions(manage_guild=True)
 @app_commands.describe(channel="The channel where new votes should be posted.")
 async def channel(interaction: discord.Interaction, channel: discord.TextChannel):
     if not interaction.guild:
@@ -806,6 +807,7 @@ async def channel(interaction: discord.Interaction, channel: discord.TextChannel
 
 
 @bot.tree.command(name="time", description="Set how often a new vote should be posted.")
+@app_commands.default_permissions(manage_guild=True)
 @app_commands.describe(amount="The number of minutes to wait between votes.")
 async def time_command(
     interaction: discord.Interaction,
@@ -854,6 +856,7 @@ async def time_command(
 
 
 @bot.tree.command(name="rarity", description="Choose which rarity can appear in votes.")
+@app_commands.default_permissions(manage_guild=True)
 @app_commands.describe(rarity="The rarity filter for new votes.")
 @app_commands.choices(
     rarity=[
@@ -883,6 +886,7 @@ async def rarity_command(
 
 
 @bot.tree.command(name="votestart", description="Start the automatic vote timer.")
+@app_commands.default_permissions(manage_guild=True)
 async def votestart(interaction: discord.Interaction):
     if not interaction.guild:
         await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
@@ -926,6 +930,7 @@ async def votestart(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="votestop", description="Stop the automatic vote timer.")
+@app_commands.default_permissions(manage_guild=True)
 async def votestop(interaction: discord.Interaction):
     if not interaction.guild:
         await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
