@@ -717,16 +717,6 @@ async def remove_other_vote_reactions(
             print(f"Could not remove old reaction vote: {error}")
 
 
-async def close_vote_message(guild_id: int, channel_id: int, message_id: int) -> None:
-    counts = get_stored_vote_counts(guild_id, message_id)
-    message = await fetch_vote_message(channel_id, message_id)
-
-    if message is None:
-        return
-
-    await update_vote_message_embed(message, counts)
-
-
 async def send_vote(channel: discord.abc.Messageable, rarity_filter: str) -> discord.Message:
     item = await get_random_mttvalues_item(rarity_filter)
     message = await channel.send(embed=create_vote_embed(item=item))
@@ -750,12 +740,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
     active_message_id = guild_config.get("active_vote_message_id")
 
     if not active_message_id or str(payload.message_id) != str(active_message_id):
-        try:
-            message = await fetch_vote_message(payload.channel_id, payload.message_id)
-            if message is not None:
-                await remove_user_vote_reaction(message, str(payload.emoji), payload.user_id)
-        except discord.DiscordException as error:
-            print(f"Could not remove old vote reaction: {error}")
         return
 
     try:
@@ -969,25 +953,13 @@ async def vote_worker():
         changed = False
 
         for guild_id, guild_config in config.items():
-            try:
-                guild_int = int(guild_id)
-            except ValueError:
-                continue
-
             channel_id = guild_config.get("channel_id")
             interval_seconds = guild_config.get("interval_seconds")
             next_vote_at = guild_config.get("next_vote_at")
             rarity_filter = guild_config.get("rarity_filter", RARITY_RANDOM)
-            previous_message_id = guild_config.get("active_vote_message_id")
-            previous_channel_id = guild_config.get("active_vote_channel_id") or channel_id
 
             if rarity_filter not in RARITY_FILTERS:
                 rarity_filter = RARITY_RANDOM
-
-            if not previous_message_id:
-                message_ids = guild_config.get("vote_message_ids", [])
-                if isinstance(message_ids, list) and message_ids:
-                    previous_message_id = message_ids[-1]
 
             if not guild_config.get("enabled"):
                 continue
@@ -1028,14 +1000,6 @@ async def vote_worker():
             changed = True
             save_config(config)
             changed = False
-
-            if previous_message_id and str(previous_message_id) != str(message.id):
-                try:
-                    await close_vote_message(guild_int, int(previous_channel_id), int(previous_message_id))
-                except (TypeError, ValueError):
-                    print(f"Could not close old vote for guild {guild_id}: saved message data is invalid.")
-                except discord.DiscordException as error:
-                    print(f"Could not close old vote for guild {guild_id}: {error}")
 
         if changed:
             save_config(config)
