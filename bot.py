@@ -7,7 +7,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import discord
@@ -48,12 +48,12 @@ VOTE_REACTIONS = {
 }
 REACTION_BY_CHOICE = {choice: emoji for emoji, choice in VOTE_REACTIONS.items()}
 RARITY_RANDOM = "random"
-LIMITED_RARITY = "Limitededition"
+LIMITED_RARITY = "Limited"
 EXOTIC_RARITY = "Exotic"
 LEGENDARY_RARITY = "Legendary"
 RARITY_FILTERS = (RARITY_RANDOM, LIMITED_RARITY, EXOTIC_RARITY, LEGENDARY_RARITY)
 RARITY_MATCH_KEYS = {
-    LIMITED_RARITY: {"limited", "limitededition", "limitededitions"},
+    LIMITED_RARITY: {"limited"},
     EXOTIC_RARITY: {"exotic"},
     LEGENDARY_RARITY: {"legendary"},
 }
@@ -62,6 +62,23 @@ GREEN_COLOR = 0x2ECC71
 RED_COLOR = 0xE74C3C
 MAX_TRACKED_VOTES = 200
 MTTVALUES_ITEMS_URL = "https://firestore.googleapis.com/v1/projects/military-tycoon-trading-values/databases/(default)/documents/items"
+MTTVALUES_FIELD_MASKS = (
+    "name",
+    "image",
+    "value",
+    "valueMin",
+    "valueMax",
+    "value_min",
+    "value_max",
+    "demand",
+    "functionality",
+    "tags",
+    "rarity",
+    "updatedAt",
+    "updated_at",
+    "createdAt",
+    "created_at",
+)
 
 
 class VoteBot(discord.Client):
@@ -441,13 +458,7 @@ def canonical_rarity_name(value: object) -> str:
 
 
 def item_rarity_values(item: dict) -> list[str]:
-    rarity_values = normalize_string_list(item.get("rarity"))
-    tag_values = normalize_string_list(item.get("tags"))
-    values = rarity_values + [
-        tag
-        for tag in tag_values
-        if any(normalize_rarity_key(tag) in keys for keys in RARITY_MATCH_KEYS.values())
-    ]
+    values = normalize_string_list(item.get("rarity"))
     seen = set()
     result = []
 
@@ -506,9 +517,11 @@ def fetch_mttvalues_items_sync() -> list[dict]:
     page_token = None
 
     while True:
-        query = {"pageSize": "1000"}
+        query = [("pageSize", "1000")]
+        query.extend(("mask.fieldPaths", field) for field in MTTVALUES_FIELD_MASKS)
+
         if page_token:
-            query["pageToken"] = page_token
+            query.append(("pageToken", page_token))
 
         url = f"{MTTVALUES_ITEMS_URL}?{urlencode(query)}"
         request = Request(url, headers={"User-Agent": "MTTV Vote Bot"})
@@ -526,16 +539,6 @@ def fetch_mttvalues_items_sync() -> list[dict]:
             break
 
     return items
-
-
-def fetch_mttvalues_item_sync(item_id: str) -> dict:
-    url = f"{MTTVALUES_ITEMS_URL}/{quote(item_id, safe='')}"
-    request = Request(url, headers={"User-Agent": "MTTV Vote Bot"})
-
-    with urlopen(request, timeout=20) as response:
-        document = json.loads(response.read().decode("utf-8"))
-
-    return item_from_firestore_document(document)
 
 
 async def get_mttvalues_items() -> list[dict]:
@@ -558,17 +561,7 @@ async def get_random_mttvalues_item(rarity_filter: str = RARITY_RANDOM) -> dict 
     elif rarity_filter != RARITY_RANDOM:
         print(f"No MTTValues items matched rarity {rarity_filter}. Using all items.")
 
-    item = random.choice(items)
-    item_id = item.get("id")
-
-    if not item_id:
-        return item
-
-    try:
-        return await asyncio.to_thread(fetch_mttvalues_item_sync, str(item_id))
-    except Exception as error:
-        print(f"Could not refresh chosen MTTValues item {item_id}: {error}")
-        return item
+    return random.choice(items)
 
 
 def format_number(value: object) -> str:
@@ -692,53 +685,46 @@ async def fetch_vote_message(channel_id: int, message_id: int) -> discord.Messag
     return await channel.fetch_message(message_id)
 
 
-async def update_vote_message_embed(guild_id: int, channel_id: int, message_id: int, counts: dict[str, int]) -> None:
-    message = await fetch_vote_message(channel_id, message_id)
-
-    if message is None:
-        return
-
+async def update_vote_message_embed(message: discord.Message, counts: dict[str, int]) -> None:
     embed = message.embeds[0].copy() if message.embeds else create_vote_embed()
     embed.color = discord.Color(get_vote_color(counts))
     apply_vote_count_footer(embed, counts)
     await message.edit(embed=embed)
 
 
-async def remove_user_vote_reaction(channel_id: int, message_id: int, emoji: str, user_id: int) -> None:
-    message = await fetch_vote_message(channel_id, message_id)
-
-    if message is None:
-        return
-
+async def remove_user_vote_reaction(message: discord.Message, emoji: str, user_id: int) -> None:
     guild = message.guild
     user = guild.get_member(user_id) if guild else None
 
     if user is None:
-        user = await bot.fetch_user(user_id)
+        user = discord.Object(id=user_id)
 
     await message.remove_reaction(emoji, user)
 
 
-async def remove_other_vote_reactions(payload: discord.RawReactionActionEvent, selected_choice: str) -> None:
+async def remove_other_vote_reactions(
+    message: discord.Message,
+    payload: discord.RawReactionActionEvent,
+    selected_choice: str,
+) -> None:
     for choice, emoji in REACTION_BY_CHOICE.items():
         if choice == selected_choice:
             continue
 
         try:
-            await remove_user_vote_reaction(payload.channel_id, payload.message_id, emoji, payload.user_id)
+            await remove_user_vote_reaction(message, emoji, payload.user_id)
         except discord.DiscordException as error:
             print(f"Could not remove old reaction vote: {error}")
 
 
 async def close_vote_message(guild_id: int, channel_id: int, message_id: int) -> None:
     counts = get_stored_vote_counts(guild_id, message_id)
-    await update_vote_message_embed(guild_id, channel_id, message_id, counts)
     message = await fetch_vote_message(channel_id, message_id)
 
     if message is None:
         return
 
-    await message.clear_reactions()
+    await update_vote_message_embed(message, counts)
 
 
 async def send_vote(channel: discord.abc.Messageable, rarity_filter: str) -> discord.Message:
@@ -765,14 +751,25 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
 
     if not active_message_id or str(payload.message_id) != str(active_message_id):
         try:
-            await remove_user_vote_reaction(payload.channel_id, payload.message_id, str(payload.emoji), payload.user_id)
+            message = await fetch_vote_message(payload.channel_id, payload.message_id)
+            if message is not None:
+                await remove_user_vote_reaction(message, str(payload.emoji), payload.user_id)
         except discord.DiscordException as error:
             print(f"Could not remove old vote reaction: {error}")
         return
 
+    try:
+        message = await fetch_vote_message(payload.channel_id, payload.message_id)
+    except discord.DiscordException as error:
+        print(f"Could not fetch vote message: {error}")
+        return
+
+    if message is None:
+        return
+
     counts = set_reaction_vote(payload.guild_id, payload.message_id, payload.user_id, choice)
-    await remove_other_vote_reactions(payload, choice)
-    await update_vote_message_embed(payload.guild_id, payload.channel_id, payload.message_id, counts)
+    await remove_other_vote_reactions(message, payload, choice)
+    await update_vote_message_embed(message, counts)
 
 
 @bot.event
@@ -794,7 +791,15 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> Non
         return
 
     counts = remove_reaction_vote(payload.guild_id, payload.message_id, payload.user_id, choice)
-    await update_vote_message_embed(payload.guild_id, payload.channel_id, payload.message_id, counts)
+
+    try:
+        message = await fetch_vote_message(payload.channel_id, payload.message_id)
+    except discord.DiscordException as error:
+        print(f"Could not fetch vote message: {error}")
+        return
+
+    if message is not None:
+        await update_vote_message_embed(message, counts)
 
 
 @bot.tree.command(name="channel", description="Choose the channel for automatic votes.")
@@ -869,7 +874,7 @@ async def time_command(
 @app_commands.choices(
     rarity=[
         app_commands.Choice(name="Random", value=RARITY_RANDOM),
-        app_commands.Choice(name="Limitededition", value=LIMITED_RARITY),
+        app_commands.Choice(name="Limited", value=LIMITED_RARITY),
         app_commands.Choice(name="Exotic", value=EXOTIC_RARITY),
         app_commands.Choice(name="Legendary", value=LEGENDARY_RARITY),
     ]
