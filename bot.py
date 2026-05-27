@@ -4,6 +4,7 @@ import json
 import os
 import random
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
@@ -342,16 +343,16 @@ def total_votes(counts: dict[str, int]) -> int:
 
 
 def apply_vote_count_footer(embed: discord.Embed, counts: dict[str, int], rarity_text: str | None = None) -> None:
-    footer_text = embed.footer.text or ""
-
-    if rarity_text is None and "Rarity:" in footer_text:
-        rarity_text = footer_text.split("Rarity:", 1)[1].strip()
-
-    text = f"Votes: {total_votes(counts)}"
-    if rarity_text:
-        text = f"{text} | Rarity: {rarity_text}"
-
+    text = (
+        "mttvalues.com • React to vote • "
+        f"{UPVOTE} {counts.get(HIGHER_CHOICE, 0)} "
+        f"{NEUTRAL_VOTE} {counts.get(STAY_CHOICE, 0)} "
+        f"{DOWNVOTE} {counts.get(LOWER_CHOICE, 0)}"
+    )
     embed.set_footer(text=text)
+
+    if embed.timestamp is None:
+        embed.timestamp = datetime.now(timezone.utc)
 
 
 def set_reaction_vote(guild_id: int, message_id: int, user_id: int, choice: str) -> dict[str, int]:
@@ -728,34 +729,73 @@ def format_score(value: object) -> str:
     return f"{number}/10"
 
 
+def format_vehicle_vote_name(item: dict) -> str:
+    name = str(item.get("name", VOTE_TEXT)).strip() or VOTE_TEXT
+    parts = name.split()
+
+    if len(parts) < 2:
+        return name
+
+    code = parts[-1].strip("()")
+    has_digit = any(character.isdigit() for character in code)
+    is_short_code = len(code) <= 8 and code.upper() == code
+
+    if code and (has_digit or is_short_code) and not name.endswith(f"({code})"):
+        return f"{name} ({code})"
+
+    return name
+
+
+def create_vote_description(item: dict | None = None) -> str:
+    if item is None:
+        value_text = "No value listed"
+    else:
+        value_text = format_value_range(item)
+
+    return (
+        "💎 **Value**\n"
+        f"**{value_text}**"
+    )
+
+
+def create_vote_options_text() -> str:
+    return (
+        f"{UPVOTE} **Increase** — the value should increase\n\n"
+        f"{NEUTRAL_VOTE} **Keep** — the value should stay the same\n\n"
+        f"{DOWNVOTE} **Decrease** — the value should decrease"
+    )
+
+
 def create_vote_embed(
     color: int | None = None,
     item: dict | None = None,
 ) -> discord.Embed:
     if item:
         embed = discord.Embed(
-            title=item.get("name", VOTE_TEXT),
+            title=f"🗳️ Value Vote: {format_vehicle_vote_name(item)}",
+            description=create_vote_description(item),
             color=discord.Color(color if color is not None else GRAY_COLOR),
         )
 
-        embed.add_field(name="Value Range", value=format_value_range(item), inline=True)
-        embed.add_field(name="Average Value", value=format_number(average_value(item)), inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=True)
-        embed.add_field(name="Demand", value=format_score(item.get("demand")), inline=True)
-        embed.add_field(name="Functionality", value=format_score(item.get("functionality")), inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        embed.add_field(name="📈 Demand", value=f"**{format_score(item.get('demand'))}**", inline=True)
+        embed.add_field(name="⚙️ Functionality", value=f"**{format_score(item.get('functionality'))}**", inline=True)
+        embed.add_field(name="\u200b", value=create_vote_options_text(), inline=False)
 
         image = item.get("image", "")
         if isinstance(image, str) and image.startswith("http"):
-            embed.set_image(url=image)
+            embed.set_thumbnail(url=image)
 
         apply_vote_count_footer(embed, empty_vote_counts(), format_item_rarity(item))
         return embed
 
     embed = discord.Embed(
-        title=VOTE_TEXT,
+        title=f"🗳️ Value Vote: {VOTE_TEXT}",
+        description=create_vote_description(),
         color=discord.Color(color if color is not None else GRAY_COLOR),
     )
+    embed.add_field(name="📈 Demand", value="**N/A**", inline=True)
+    embed.add_field(name="⚙️ Functionality", value="**N/A**", inline=True)
+    embed.add_field(name="\u200b", value=create_vote_options_text(), inline=False)
     apply_vote_count_footer(embed, empty_vote_counts())
     return embed
 
