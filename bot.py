@@ -233,6 +233,26 @@ def store_vote_message_id(guild_config: dict, message_id: int) -> None:
         guild_config["reaction_votes"] = {str(message_id): {}}
 
 
+def record_vote_message(guild_config: dict, channel_id: int, message_id: int) -> None:
+    store_vote_message_id(guild_config, message_id)
+    guild_config["active_vote_message_id"] = str(message_id)
+    guild_config["active_vote_channel_id"] = str(channel_id)
+
+
+def is_tracked_vote_message(guild_config: dict, message_id: int) -> bool:
+    message_key = str(message_id)
+    active_message_id = guild_config.get("active_vote_message_id")
+
+    if active_message_id and message_key == str(active_message_id):
+        return True
+
+    message_ids = guild_config.get("vote_message_ids", [])
+    if not isinstance(message_ids, list):
+        return False
+
+    return message_key in {str(saved_id) for saved_id in message_ids}
+
+
 def format_interval(seconds: int) -> str:
     if seconds % 60 == 0:
         amount = seconds // 60
@@ -447,6 +467,10 @@ def normalize_rarity_key(value: object) -> str:
     return str(value).lower().replace(" ", "").replace("_", "").replace("-", "")
 
 
+def normalize_vehicle_lookup(value: object) -> str:
+    return "".join(character for character in str(value).lower() if character.isalnum())
+
+
 def canonical_rarity_name(value: object) -> str:
     key = normalize_rarity_key(value)
 
@@ -482,6 +506,34 @@ def item_matches_rarity(item: dict, rarity_filter: str) -> bool:
 
     wanted_keys = RARITY_MATCH_KEYS.get(rarity_filter, {normalize_rarity_key(rarity_filter)})
     return any(normalize_rarity_key(value) in wanted_keys for value in item_rarity_values(item))
+
+
+def find_mttvalues_item(items: list[dict], vehicle_name: str) -> dict | None:
+    query = normalize_vehicle_lookup(vehicle_name)
+    if not query:
+        return None
+
+    exact_matches = []
+    prefix_matches = []
+    contains_matches = []
+
+    for item in items:
+        name_key = normalize_vehicle_lookup(item.get("name", ""))
+        if not name_key:
+            continue
+
+        if name_key == query:
+            exact_matches.append(item)
+        elif name_key.startswith(query):
+            prefix_matches.append(item)
+        elif query in name_key:
+            contains_matches.append(item)
+
+    for matches in (exact_matches, prefix_matches, contains_matches):
+        if matches:
+            return matches[0]
+
+    return None
 
 
 def normalize_mttvalues_item(raw_item: dict) -> dict:
@@ -717,8 +769,14 @@ async def remove_other_vote_reactions(
             print(f"Could not remove old reaction vote: {error}")
 
 
-async def send_vote(channel: discord.abc.Messageable, rarity_filter: str) -> discord.Message:
-    item = await get_random_mttvalues_item(rarity_filter)
+async def send_vote(
+    channel: discord.abc.Messageable,
+    rarity_filter: str = RARITY_RANDOM,
+    item: dict | None = None,
+) -> discord.Message:
+    if item is None:
+        item = await get_random_mttvalues_item(rarity_filter)
+
     message = await channel.send(embed=create_vote_embed(item=item))
 
     for emoji in VOTE_REACTIONS:
@@ -737,9 +795,8 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
         return
 
     guild_config = get_guild_config(payload.guild_id)
-    active_message_id = guild_config.get("active_vote_message_id")
 
-    if not active_message_id or str(payload.message_id) != str(active_message_id):
+    if not is_tracked_vote_message(guild_config, payload.message_id):
         return
 
     try:
@@ -766,9 +823,8 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> Non
         return
 
     guild_config = get_guild_config(payload.guild_id)
-    active_message_id = guild_config.get("active_vote_message_id")
 
-    if not active_message_id or str(payload.message_id) != str(active_message_id):
+    if not is_tracked_vote_message(guild_config, payload.message_id):
         return
 
     if get_stored_user_vote(payload.guild_id, payload.message_id, payload.user_id) != choice:
@@ -885,6 +941,75 @@ async def rarity_command(
         await interaction.response.send_message(f"Vote rarity set to {rarity.value}.", ephemeral=True)
 
 
+@bot.tree.command(name="voteforce", description="Start a vote for one vehicle now.")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(vehicle_name="The vehicle name to use for the vote.")
+async def voteforce(interaction: discord.Interaction, vehicle_name: str):
+    if not interaction.guild:
+        await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
+        return
+
+    if not await require_manage_guild(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    guild_config = get_guild_config(interaction.guild.id)
+    channel_id = guild_config.get("channel_id")
+    if not channel_id:
+        await interaction.followup.send("Set a vote channel first with `/channel`.", ephemeral=True)
+        return
+
+    channel = interaction.guild.get_channel(int(channel_id))
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(int(channel_id))
+        except discord.DiscordException as error:
+            print(f"Could not find vote channel for guild {interaction.guild.id}: {error}")
+            await interaction.followup.send("The saved vote channel no longer exists. Set it again with `/channel`.", ephemeral=True)
+            return
+
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.followup.send("The saved vote channel no longer exists. Set it again with `/channel`.", ephemeral=True)
+        return
+
+    allowed, error = bot_can_vote_in(channel, interaction.guild)
+    if not allowed:
+        await interaction.followup.send(error, ephemeral=True)
+        return
+
+    try:
+        items = await get_mttvalues_items()
+    except Exception as error:
+        print(f"Could not fetch MTTValues items: {error}")
+        await interaction.followup.send("Could not fetch mttvalues.com right now.", ephemeral=True)
+        return
+
+    item = find_mttvalues_item(items, vehicle_name)
+    if item is None:
+        await interaction.followup.send(f"Could not find `{vehicle_name}` on mttvalues.com.", ephemeral=True)
+        return
+
+    try:
+        message = await send_vote(channel, item=item)
+    except discord.DiscordException as error:
+        print(f"Could not send forced vote for guild {interaction.guild.id}: {error}")
+        await interaction.followup.send("Could not send the forced vote.", ephemeral=True)
+        return
+
+    config = load_config()
+    guild_key = str(interaction.guild.id)
+    guild_config = config.get(guild_key, {})
+    record_vote_message(guild_config, channel.id, message.id)
+    config[guild_key] = guild_config
+    save_config(config)
+
+    await interaction.followup.send(
+        f"Forced vote started for {item.get('name', vehicle_name)} in {channel.mention}.",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="votestart", description="Start the automatic vote timer.")
 @app_commands.default_permissions(manage_guild=True)
 async def votestart(interaction: discord.Interaction):
@@ -994,9 +1119,7 @@ async def vote_worker():
                 print(f"Could not send vote for guild {guild_id}: {error}")
                 continue
 
-            store_vote_message_id(guild_config, message.id)
-            guild_config["active_vote_message_id"] = str(message.id)
-            guild_config["active_vote_channel_id"] = str(getattr(channel, "id", channel_id))
+            record_vote_message(guild_config, int(getattr(channel, "id", channel_id)), message.id)
 
             while float(next_vote_at) <= now:
                 next_vote_at = float(next_vote_at) + int(interval_seconds)
