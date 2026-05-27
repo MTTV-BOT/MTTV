@@ -61,6 +61,8 @@ GRAY_COLOR = 0x808080
 GREEN_COLOR = 0x2ECC71
 RED_COLOR = 0xE74C3C
 MAX_TRACKED_VOTES = 200
+AUTOCOMPLETE_CHOICE_LIMIT = 25
+AUTOCOMPLETE_CACHE_SECONDS = 600
 MTTVALUES_ITEMS_URL = "https://firestore.googleapis.com/v1/projects/military-tycoon-trading-values/databases/(default)/documents/items"
 MTTVALUES_FIELD_MASKS = (
     "name",
@@ -79,6 +81,8 @@ MTTVALUES_FIELD_MASKS = (
     "createdAt",
     "created_at",
 )
+MTTVALUES_AUTOCOMPLETE_NAMES: list[str] = []
+MTTVALUES_AUTOCOMPLETE_LOADED_AT = 0.0
 
 
 class VoteBot(discord.Client):
@@ -112,6 +116,7 @@ class VoteBot(discord.Client):
         except discord.DiscordException as error:
             print(f"Global command sync failed: {error}")
 
+        self.loop.create_task(refresh_mttvalues_autocomplete_cache())
         self.loop.create_task(vote_worker())
 
 
@@ -471,6 +476,11 @@ def normalize_vehicle_lookup(value: object) -> str:
     return "".join(character for character in str(value).lower() if character.isalnum())
 
 
+def truncate_choice_text(value: object) -> str:
+    text = str(value).strip()
+    return text[:100]
+
+
 def canonical_rarity_name(value: object) -> str:
     key = normalize_rarity_key(value)
 
@@ -536,6 +546,41 @@ def find_mttvalues_item(items: list[dict], vehicle_name: str) -> dict | None:
     return None
 
 
+def unique_vehicle_names(items: list[dict]) -> list[str]:
+    names = []
+    seen = set()
+
+    for item in sorted(items, key=lambda entry: str(entry.get("name", "")).casefold()):
+        name = str(item.get("name", "")).strip()
+        key = normalize_vehicle_lookup(name)
+
+        if not name or key in seen:
+            continue
+
+        seen.add(key)
+        names.append(name)
+
+    return names
+
+
+def match_vehicle_names(names: list[str], current: str) -> list[str]:
+    query = normalize_vehicle_lookup(current)
+    if not query:
+        return names[:AUTOCOMPLETE_CHOICE_LIMIT]
+
+    prefix_matches = []
+    contains_matches = []
+
+    for name in names:
+        name_key = normalize_vehicle_lookup(name)
+        if name_key.startswith(query):
+            prefix_matches.append(name)
+        elif query in name_key:
+            contains_matches.append(name)
+
+    return (prefix_matches + contains_matches)[:AUTOCOMPLETE_CHOICE_LIMIT]
+
+
 def normalize_mttvalues_item(raw_item: dict) -> dict:
     value_min = first_present(raw_item.get("valueMin"), raw_item.get("value_min"), raw_item.get("value"))
     value_max = first_present(raw_item.get("valueMax"), raw_item.get("value_max"), raw_item.get("value"))
@@ -595,6 +640,28 @@ def fetch_mttvalues_items_sync() -> list[dict]:
 
 async def get_mttvalues_items() -> list[dict]:
     return await asyncio.to_thread(fetch_mttvalues_items_sync)
+
+
+async def refresh_mttvalues_autocomplete_cache() -> list[str]:
+    global MTTVALUES_AUTOCOMPLETE_LOADED_AT, MTTVALUES_AUTOCOMPLETE_NAMES
+
+    try:
+        items = await get_mttvalues_items()
+    except Exception as error:
+        print(f"Could not refresh MTTValues autocomplete: {error}")
+        return MTTVALUES_AUTOCOMPLETE_NAMES
+
+    MTTVALUES_AUTOCOMPLETE_NAMES = unique_vehicle_names(items)
+    MTTVALUES_AUTOCOMPLETE_LOADED_AT = time.time()
+    return MTTVALUES_AUTOCOMPLETE_NAMES
+
+
+async def get_mttvalues_autocomplete_names() -> list[str]:
+    cache_age = time.time() - MTTVALUES_AUTOCOMPLETE_LOADED_AT
+    if MTTVALUES_AUTOCOMPLETE_NAMES and cache_age < AUTOCOMPLETE_CACHE_SECONDS:
+        return MTTVALUES_AUTOCOMPLETE_NAMES
+
+    return await refresh_mttvalues_autocomplete_cache()
 
 
 async def get_random_mttvalues_item(rarity_filter: str = RARITY_RANDOM) -> dict | None:
@@ -1008,6 +1075,20 @@ async def voteforce(interaction: discord.Interaction, vehicle_name: str):
         f"Forced vote started for {item.get('name', vehicle_name)} in {channel.mention}.",
         ephemeral=True,
     )
+
+
+@voteforce.autocomplete("vehicle_name")
+async def voteforce_vehicle_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    names = await get_mttvalues_autocomplete_names()
+    matches = match_vehicle_names(names, current)
+
+    return [
+        app_commands.Choice(name=truncate_choice_text(name), value=truncate_choice_text(name))
+        for name in matches
+    ]
 
 
 @bot.tree.command(name="votestart", description="Start the automatic vote timer.")
