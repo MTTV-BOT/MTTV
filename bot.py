@@ -32,20 +32,18 @@ ENV_INTERVAL_MINUTES = os.getenv("VOTE_INTERVAL_MINUTES", "").strip()
 ENV_INTERVAL_SECONDS = os.getenv("VOTE_INTERVAL_SECONDS", "").strip()
 ENV_VOTE_TEXT = os.getenv("VOTE_TEXT", "").strip()
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(os.getenv("DATA_DIR", str(Path(__file__).parent / "data")))
 CONFIG_FILE = DATA_DIR / "vote_config.json"
 VOTE_TEXT = ENV_VOTE_TEXT or "vote"
-UPVOTE = "\u2b06\ufe0f"
-NEUTRAL_VOTE = "\u2194\ufe0f"
-DOWNVOTE = "\u2b07\ufe0f"
-HIGHER_CHOICE = "higher"
-STAY_CHOICE = "stay"
-LOWER_CHOICE = "lower"
-VOTE_CHOICES = (HIGHER_CHOICE, STAY_CHOICE, LOWER_CHOICE)
+PROPOSAL_SUBMITTER = os.getenv("PROPOSAL_SUBMITTER", "merkberg@mttvalues.com").strip() or "merkberg@mttvalues.com"
+APPROVE_REACTION = "\u2705"
+DENY_REACTION = "\u274c"
+APPROVE_CHOICE = "approve"
+DENY_CHOICE = "deny"
+VOTE_CHOICES = (APPROVE_CHOICE, DENY_CHOICE)
 VOTE_REACTIONS = {
-    UPVOTE: HIGHER_CHOICE,
-    NEUTRAL_VOTE: STAY_CHOICE,
-    DOWNVOTE: LOWER_CHOICE,
+    APPROVE_REACTION: APPROVE_CHOICE,
+    DENY_REACTION: DENY_CHOICE,
 }
 REACTION_BY_CHOICE = {choice: emoji for emoji, choice in VOTE_REACTIONS.items()}
 RARITY_RANDOM = "random"
@@ -343,13 +341,7 @@ def total_votes(counts: dict[str, int]) -> int:
 
 
 def apply_vote_count_footer(embed: discord.Embed, counts: dict[str, int], rarity_text: str | None = None) -> None:
-    text = (
-        "mttvalues.com • React to vote • "
-        f"{UPVOTE} {counts.get(HIGHER_CHOICE, 0)} "
-        f"{NEUTRAL_VOTE} {counts.get(STAY_CHOICE, 0)} "
-        f"{DOWNVOTE} {counts.get(LOWER_CHOICE, 0)}"
-    )
-    embed.set_footer(text=text)
+    embed.set_footer(text="mttvalues.com • React to vote")
 
     if embed.timestamp is None:
         embed.timestamp = datetime.now(timezone.utc)
@@ -726,7 +718,48 @@ def format_score(value: object) -> str:
     if number is None:
         return "N/A"
 
-    return f"{number}/10"
+    return str(number)
+
+
+def format_score_change(old_value: object, new_value: object | None = None) -> str:
+    old_text = format_score(old_value)
+    new_text = old_text if new_value is None else format_score(new_value)
+    return f"{old_text} → {new_text}"
+
+
+def format_value_number(value: object) -> str:
+    number = parse_int(value)
+    if number is None:
+        return "N/A"
+
+    return f"{number:,}"
+
+
+def format_value_range_from_numbers(value_min: object, value_max: object | None = None) -> str:
+    min_text = format_value_number(value_min)
+    max_text = format_value_number(value_max)
+
+    if max_text == "N/A" or min_text == max_text:
+        return min_text
+
+    return f"{min_text} - {max_text}"
+
+
+def format_value_change(
+    item: dict,
+    new_value_min: int | None = None,
+    new_value_max: int | None = None,
+) -> str:
+    old_text = format_value_range(item)
+
+    if new_value_min is None and new_value_max is None:
+        new_text = old_text
+    else:
+        value_min = new_value_min if new_value_min is not None else new_value_max
+        value_max = new_value_max if new_value_max is not None else value_min
+        new_text = format_value_range_from_numbers(value_min, value_max)
+
+    return f"{old_text} → {new_text}"
 
 
 def format_vehicle_vote_name(item: dict) -> str:
@@ -746,39 +779,57 @@ def format_vehicle_vote_name(item: dict) -> str:
     return name
 
 
-def create_vote_description(item: dict | None = None) -> str:
+def create_vote_description(
+    item: dict | None = None,
+    new_value_min: int | None = None,
+    new_value_max: int | None = None,
+    submitter: str | None = None,
+) -> str:
     if item is None:
-        value_text = "No value listed"
+        value_text = "No value listed → No value listed"
     else:
-        value_text = format_value_range(item)
+        value_text = format_value_change(item, new_value_min, new_value_max)
+
+    proposal_submitter = (submitter or PROPOSAL_SUBMITTER).strip() or PROPOSAL_SUBMITTER
 
     return (
+        f"Submitted by {proposal_submitter}\n\n"
         "💎 **Value**\n"
-        f"**{value_text}**"
+        f"{value_text}"
     )
 
 
 def create_vote_options_text() -> str:
     return (
-        f"{UPVOTE} **Increase** — the value should increase\n\n"
-        f"{NEUTRAL_VOTE} **Keep** — the value should stay the same\n\n"
-        f"{DOWNVOTE} **Decrease** — the value should decrease"
+        f"{APPROVE_REACTION} **Approve** — react to approve\n\n"
+        f"{DENY_REACTION} **Deny** — react to deny"
     )
 
 
 def create_vote_embed(
     color: int | None = None,
     item: dict | None = None,
+    new_value_min: int | None = None,
+    new_value_max: int | None = None,
+    new_demand: int | None = None,
+    new_functionality: int | None = None,
+    status_tags: str | None = None,
+    submitter: str | None = None,
 ) -> discord.Embed:
     if item:
         embed = discord.Embed(
-            title=f"🗳️ Value Vote: {format_vehicle_vote_name(item)}",
-            description=create_vote_description(item),
+            title=f"🗳️ Value Change Proposal: {format_vehicle_vote_name(item)}",
+            description=create_vote_description(item, new_value_min, new_value_max, submitter),
             color=discord.Color(color if color is not None else GRAY_COLOR),
         )
 
-        embed.add_field(name="📈 Demand", value=f"**{format_score(item.get('demand'))}**", inline=True)
-        embed.add_field(name="⚙️ Functionality", value=f"**{format_score(item.get('functionality'))}**", inline=True)
+        embed.add_field(name="📈 Demand", value=format_score_change(item.get("demand"), new_demand), inline=True)
+        embed.add_field(
+            name="⚙️ Functionality",
+            value=format_score_change(item.get("functionality"), new_functionality),
+            inline=True,
+        )
+        embed.add_field(name="🏷️ Status Tags", value=(status_tags or "No changes").strip() or "No changes", inline=False)
         embed.add_field(name="\u200b", value=create_vote_options_text(), inline=False)
 
         image = item.get("image", "")
@@ -789,12 +840,13 @@ def create_vote_embed(
         return embed
 
     embed = discord.Embed(
-        title=f"🗳️ Value Vote: {VOTE_TEXT}",
-        description=create_vote_description(),
+        title=f"🗳️ Value Change Proposal: {VOTE_TEXT}",
+        description=create_vote_description(submitter=submitter),
         color=discord.Color(color if color is not None else GRAY_COLOR),
     )
     embed.add_field(name="📈 Demand", value="**N/A**", inline=True)
     embed.add_field(name="⚙️ Functionality", value="**N/A**", inline=True)
+    embed.add_field(name="🏷️ Status Tags", value=(status_tags or "No changes").strip() or "No changes", inline=False)
     embed.add_field(name="\u200b", value=create_vote_options_text(), inline=False)
     apply_vote_count_footer(embed, empty_vote_counts())
     return embed
@@ -809,10 +861,10 @@ def get_vote_color(counts: dict[str, int]) -> int:
     if len(winners) != 1:
         return GRAY_COLOR
 
-    if winners[0] == HIGHER_CHOICE:
+    if winners[0] == APPROVE_CHOICE:
         return GREEN_COLOR
 
-    if winners[0] == LOWER_CHOICE:
+    if winners[0] == DENY_CHOICE:
         return RED_COLOR
 
     return GRAY_COLOR
@@ -880,11 +932,27 @@ async def send_vote(
     channel: discord.abc.Messageable,
     rarity_filter: str = RARITY_RANDOM,
     item: dict | None = None,
+    new_value_min: int | None = None,
+    new_value_max: int | None = None,
+    new_demand: int | None = None,
+    new_functionality: int | None = None,
+    status_tags: str | None = None,
+    submitter: str | None = None,
 ) -> discord.Message:
     if item is None:
         item = await get_random_mttvalues_item(rarity_filter)
 
-    message = await channel.send(embed=create_vote_embed(item=item))
+    message = await channel.send(
+        embed=create_vote_embed(
+            item=item,
+            new_value_min=new_value_min,
+            new_value_max=new_value_max,
+            new_demand=new_demand,
+            new_functionality=new_functionality,
+            status_tags=status_tags,
+            submitter=submitter,
+        ),
+    )
 
     for emoji in VOTE_REACTIONS:
         await message.add_reaction(emoji)
@@ -1050,8 +1118,25 @@ async def rarity_command(
 
 @bot.tree.command(name="voteforce", description="Start a vote for one vehicle now.")
 @app_commands.default_permissions(manage_guild=True)
-@app_commands.describe(vehicle_name="The vehicle name to use for the vote.")
-async def voteforce(interaction: discord.Interaction, vehicle_name: str):
+@app_commands.describe(
+    vehicle_name="The vehicle name to use for the vote.",
+    new_value_min="Optional new minimum value for the proposal.",
+    new_value_max="Optional new maximum value for the proposal.",
+    demand="Optional new demand score from 0 to 10.",
+    functionality="Optional new functionality score from 0 to 10.",
+    status_tags="Optional status tag changes, or leave empty for no changes.",
+    submitter="Optional submitter text shown on the proposal.",
+)
+async def voteforce(
+    interaction: discord.Interaction,
+    vehicle_name: str,
+    new_value_min: int | None = None,
+    new_value_max: int | None = None,
+    demand: int | None = None,
+    functionality: int | None = None,
+    status_tags: str | None = None,
+    submitter: str | None = None,
+):
     if not interaction.guild:
         await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
         return
@@ -1060,6 +1145,16 @@ async def voteforce(interaction: discord.Interaction, vehicle_name: str):
         return
 
     await interaction.response.defer(ephemeral=True)
+
+    for label, score in (("demand", demand), ("functionality", functionality)):
+        if score is not None and not 0 <= score <= 10:
+            await interaction.followup.send(f"`{label}` must be between 0 and 10.", ephemeral=True)
+            return
+
+    for label, value in (("new_value_min", new_value_min), ("new_value_max", new_value_max)):
+        if value is not None and value < 0:
+            await interaction.followup.send(f"`{label}` must be 0 or higher.", ephemeral=True)
+            return
 
     guild_config = get_guild_config(interaction.guild.id)
     channel_id = guild_config.get("channel_id")
@@ -1098,7 +1193,16 @@ async def voteforce(interaction: discord.Interaction, vehicle_name: str):
         return
 
     try:
-        message = await send_vote(channel, item=item)
+        message = await send_vote(
+            channel,
+            item=item,
+            new_value_min=new_value_min,
+            new_value_max=new_value_max,
+            new_demand=demand,
+            new_functionality=functionality,
+            status_tags=status_tags,
+            submitter=submitter,
+        )
     except discord.DiscordException as error:
         print(f"Could not send forced vote for guild {interaction.guild.id}: {error}")
         await interaction.followup.send("Could not send the forced vote.", ephemeral=True)
