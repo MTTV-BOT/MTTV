@@ -38,11 +38,14 @@ VOTE_TEXT = ENV_VOTE_TEXT or "vote"
 PROPOSAL_SUBMITTER = os.getenv("PROPOSAL_SUBMITTER", "merkberg@mttvalues.com").strip() or "merkberg@mttvalues.com"
 APPROVE_REACTION = "\u2b06\ufe0f"
 DENY_REACTION = "\u2b07\ufe0f"
+NEUTRAL_REACTION = "\u2194\ufe0f"
 APPROVE_CHOICE = "approve"
 DENY_CHOICE = "deny"
-VOTE_CHOICES = (APPROVE_CHOICE, DENY_CHOICE)
+NEUTRAL_CHOICE = "neutral"
+VOTE_CHOICES = (APPROVE_CHOICE, NEUTRAL_CHOICE, DENY_CHOICE)
 VOTE_REACTIONS = {
     APPROVE_REACTION: APPROVE_CHOICE,
+    NEUTRAL_REACTION: NEUTRAL_CHOICE,
     DENY_REACTION: DENY_CHOICE,
 }
 REACTION_BY_CHOICE = {choice: emoji for emoji, choice in VOTE_REACTIONS.items()}
@@ -55,6 +58,40 @@ RARITY_MATCH_KEYS = {
     LIMITED_RARITY: {"limited"},
     EXOTIC_RARITY: {"exotic"},
     LEGENDARY_RARITY: {"legendary"},
+}
+RARITY_STYLE_MAP = {
+    "Common": discord.ButtonStyle.secondary,
+    "Rare": discord.ButtonStyle.primary,
+    "Epic": discord.ButtonStyle.primary,
+    "Legendary": discord.ButtonStyle.success,
+    "Exotic": discord.ButtonStyle.success,
+    "Limited": discord.ButtonStyle.danger,
+}
+TAG_STYLE_MAP = {
+    "rising": discord.ButtonStyle.success,
+    "stable": discord.ButtonStyle.primary,
+    "dropping": discord.ButtonStyle.danger,
+    "underpaid": discord.ButtonStyle.success,
+    "overpaid": discord.ButtonStyle.success,
+    "meta": discord.ButtonStyle.primary,
+    "unstable": discord.ButtonStyle.danger,
+}
+RARITY_EMOJI_MAP = {
+    "Common": "\u26aa",
+    "Rare": "\U0001f535",
+    "Epic": "\U0001f7e3",
+    "Legendary": "\U0001f7e1",
+    "Exotic": "\U0001f7e0",
+    "Limited": "\U0001f534",
+}
+TAG_EMOJI_MAP = {
+    "rising": "\U0001f7e2",
+    "stable": "\U0001f535",
+    "dropping": "\U0001f534",
+    "underpaid": "\U0001f7e2",
+    "overpaid": "\U0001f7e0",
+    "meta": "\U0001f7e3",
+    "unstable": "\U0001f534",
 }
 GRAY_COLOR = 0x808080
 GREEN_COLOR = 0x2ECC71
@@ -724,8 +761,10 @@ def format_score(value: object) -> str:
 
 def format_score_change(old_value: object, new_value: object | None = None) -> str:
     old_text = format_score(old_value)
-    new_text = old_text if new_value is None else format_score(new_value)
-    return f"{old_text} → {new_text}"
+    if new_value is None:
+        return old_text
+
+    return f"{old_text} → {format_score(new_value)}"
 
 
 def format_value_number(value: object) -> str:
@@ -754,13 +793,11 @@ def format_value_change(
     old_text = format_value_range(item)
 
     if new_value_min is None and new_value_max is None:
-        new_text = old_text
-    else:
-        value_min = new_value_min if new_value_min is not None else new_value_max
-        value_max = new_value_max if new_value_max is not None else value_min
-        new_text = format_value_range_from_numbers(value_min, value_max)
+        return old_text
 
-    return f"{old_text} → {new_text}"
+    value_min = new_value_min if new_value_min is not None else new_value_max
+    value_max = new_value_max if new_value_max is not None else value_min
+    return f"{old_text} → {format_value_range_from_numbers(value_min, value_max)}"
 
 
 def format_vehicle_vote_name(item: dict) -> str:
@@ -786,10 +823,7 @@ def create_vote_description(
     new_value_max: int | None = None,
     submitter: str | None = None,
 ) -> str:
-    if item is None:
-        value_text = "No value listed → No value listed"
-    else:
-        value_text = format_value_change(item, new_value_min, new_value_max)
+    value_text = "No value listed" if item is None else format_value_change(item, new_value_min, new_value_max)
 
     proposal_submitter = (submitter or PROPOSAL_SUBMITTER).strip() or PROPOSAL_SUBMITTER
 
@@ -803,6 +837,7 @@ def create_vote_description(
 def create_vote_options_text() -> str:
     return (
         f"{APPROVE_REACTION} **Approve** — react to approve\n\n"
+        f"{NEUTRAL_REACTION} **Neutral** — react for no change\n\n"
         f"{DENY_REACTION} **Deny** — react to deny"
     )
 
@@ -894,8 +929,10 @@ def create_value_embed(item: dict) -> discord.Embed:
 
 def format_score_change(old_value: object, new_value: object | None = None) -> str:
     old_text = format_score(old_value)
-    new_text = old_text if new_value is None else format_score(new_value)
-    return f"{old_text} \u2192 {new_text}"
+    if new_value is None:
+        return old_text
+
+    return f"{old_text} \u2192 {format_score(new_value)}"
 
 
 def format_value_change(
@@ -906,13 +943,11 @@ def format_value_change(
     old_text = format_value_range(item)
 
     if new_value_min is None and new_value_max is None:
-        new_text = old_text
-    else:
-        value_min = new_value_min if new_value_min is not None else new_value_max
-        value_max = new_value_max if new_value_max is not None else value_min
-        new_text = format_value_range_from_numbers(value_min, value_max)
+        return old_text
 
-    return f"{old_text} \u2192 {new_text}"
+    value_min = new_value_min if new_value_min is not None else new_value_max
+    value_max = new_value_max if new_value_max is not None else value_min
+    return f"{old_text} \u2192 {format_value_range_from_numbers(value_min, value_max)}"
 
 
 def create_vote_description(
@@ -921,11 +956,7 @@ def create_vote_description(
     new_value_max: int | None = None,
     submitter: str | None = None,
 ) -> str:
-    value_text = (
-        "No value listed \u2192 No value listed"
-        if item is None
-        else format_value_change(item, new_value_min, new_value_max)
-    )
+    value_text = "No value listed" if item is None else format_value_change(item, new_value_min, new_value_max)
     proposal_submitter = (submitter or PROPOSAL_SUBMITTER).strip() or PROPOSAL_SUBMITTER
 
     return (
@@ -938,6 +969,7 @@ def create_vote_description(
 def create_vote_options_text() -> str:
     return (
         f"{APPROVE_REACTION} **Approve** \u2014 react to approve\n\n"
+        f"{NEUTRAL_REACTION} **Neutral** \u2014 react for no change\n\n"
         f"{DENY_REACTION} **Deny** \u2014 react to deny"
     )
 
@@ -983,6 +1015,51 @@ def create_vote_embed(
 
     embed.set_footer(text="mttvalues.com \u2022 React to vote")
     return embed
+
+
+def titleize_badge_label(value: object) -> str:
+    text = str(value).strip().replace("_", " ").replace("-", " ")
+    return " ".join(part.capitalize() for part in text.split())
+
+
+def create_value_badge_view(item: dict) -> discord.ui.View | None:
+    badges: list[tuple[str, str | None, discord.ButtonStyle]] = []
+
+    for rarity in item_rarity_values(item):
+        label = canonical_rarity_name(rarity)
+        if not label:
+            continue
+
+        emoji = RARITY_EMOJI_MAP.get(label)
+        style = RARITY_STYLE_MAP.get(label, discord.ButtonStyle.secondary)
+        badges.append((label, emoji, style))
+
+    for tag in normalize_string_list(item.get("tags")):
+        key = str(tag).strip().lower().replace("_", "-")
+        label = titleize_badge_label(tag)
+        if not label:
+            continue
+
+        emoji = TAG_EMOJI_MAP.get(key)
+        style = TAG_STYLE_MAP.get(key, discord.ButtonStyle.secondary)
+        badges.append((label, emoji, style))
+
+    if not badges:
+        return None
+
+    view = discord.ui.View(timeout=None)
+    for label, emoji, style in badges[:25]:
+        button_kwargs: dict[str, object] = {
+            "label": label[:80],
+            "style": style,
+            "disabled": True,
+        }
+        if emoji:
+            button_kwargs["emoji"] = emoji
+
+        view.add_item(discord.ui.Button(**button_kwargs))
+
+    return view
 
 
 def get_vote_color(counts: dict[str, int]) -> int:
@@ -1128,7 +1205,7 @@ async def value(interaction: discord.Interaction, item: str):
             await interaction.followup.send(f"Could not find `{item}` on mttvalues.com.", ephemeral=True)
         return
 
-    await interaction.followup.send(embed=create_value_embed(matched_item))
+    await interaction.followup.send(embed=create_value_embed(matched_item), view=create_value_badge_view(matched_item))
 
 
 @value.autocomplete("item")
