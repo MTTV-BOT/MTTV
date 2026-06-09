@@ -883,6 +883,99 @@ def create_value_embed(item: dict) -> discord.Embed:
     return embed
 
 
+def format_score_change(old_value: object, new_value: object | None = None) -> str:
+    old_text = format_score(old_value)
+    new_text = old_text if new_value is None else format_score(new_value)
+    return f"{old_text} \u2192 {new_text}"
+
+
+def format_value_change(
+    item: dict,
+    new_value_min: int | None = None,
+    new_value_max: int | None = None,
+) -> str:
+    old_text = format_value_range(item)
+
+    if new_value_min is None and new_value_max is None:
+        new_text = old_text
+    else:
+        value_min = new_value_min if new_value_min is not None else new_value_max
+        value_max = new_value_max if new_value_max is not None else value_min
+        new_text = format_value_range_from_numbers(value_min, value_max)
+
+    return f"{old_text} \u2192 {new_text}"
+
+
+def create_vote_description(
+    item: dict | None = None,
+    new_value_min: int | None = None,
+    new_value_max: int | None = None,
+    submitter: str | None = None,
+) -> str:
+    value_text = (
+        "No value listed \u2192 No value listed"
+        if item is None
+        else format_value_change(item, new_value_min, new_value_max)
+    )
+    proposal_submitter = (submitter or PROPOSAL_SUBMITTER).strip() or PROPOSAL_SUBMITTER
+
+    return (
+        f"Submitted by {proposal_submitter}\n\n"
+        "\U0001f48e **Value**\n"
+        f"{value_text}"
+    )
+
+
+def create_vote_options_text() -> str:
+    return (
+        f"{APPROVE_REACTION} **Approve** \u2014 react to approve\n\n"
+        f"{DENY_REACTION} **Deny** \u2014 react to deny"
+    )
+
+
+def create_vote_embed(
+    color: int | None = None,
+    item: dict | None = None,
+    new_value_min: int | None = None,
+    new_value_max: int | None = None,
+    new_demand: int | None = None,
+    new_functionality: int | None = None,
+    status_tags: str | None = None,
+    submitter: str | None = None,
+) -> discord.Embed:
+    title_name = format_vehicle_vote_name(item) if item else VOTE_TEXT
+    embed = discord.Embed(
+        title=f"\U0001f5f3\ufe0f Value Change Proposal: {title_name}",
+        description=create_vote_description(item, new_value_min, new_value_max, submitter),
+        color=discord.Color(color if color is not None else GRAY_COLOR),
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    if item:
+        demand = format_score_change(item.get("demand"), new_demand)
+        functionality = format_score_change(item.get("functionality"), new_functionality)
+        image = item.get("image", "")
+    else:
+        demand = "**N/A**"
+        functionality = "**N/A**"
+        image = ""
+
+    embed.add_field(name="\U0001f4c8 Demand", value=demand, inline=True)
+    embed.add_field(name="\u2699\ufe0f Functionality", value=functionality, inline=True)
+    embed.add_field(
+        name="\U0001f3f7\ufe0f Status Tags",
+        value=(status_tags or "No changes").strip() or "No changes",
+        inline=False,
+    )
+    embed.add_field(name="\u200b", value=create_vote_options_text(), inline=False)
+
+    if isinstance(image, str) and image.startswith("http"):
+        embed.set_thumbnail(url=image)
+
+    embed.set_footer(text="mttvalues.com \u2022 React to vote")
+    return embed
+
+
 def get_vote_color(counts: dict[str, int]) -> int:
     max_votes = max(counts.get(choice, 0) for choice in VOTE_CHOICES)
     if max_votes == 0:
@@ -993,59 +1086,12 @@ async def send_vote(
 
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
-    if bot.user and payload.user_id == bot.user.id:
-        return
-
-    choice = choice_from_emoji(payload.emoji)
-    if choice is None or payload.guild_id is None:
-        return
-
-    guild_config = get_guild_config(payload.guild_id)
-
-    if not is_tracked_vote_message(guild_config, payload.message_id):
-        return
-
-    try:
-        message = await fetch_vote_message(payload.channel_id, payload.message_id)
-    except discord.DiscordException as error:
-        print(f"Could not fetch vote message: {error}")
-        return
-
-    if message is None:
-        return
-
-    counts = set_reaction_vote(payload.guild_id, payload.message_id, payload.user_id, choice)
-    await remove_other_vote_reactions(message, payload, choice)
-    await update_vote_message_embed(message, counts)
+    return
 
 
 @bot.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> None:
-    if bot.user and payload.user_id == bot.user.id:
-        return
-
-    choice = choice_from_emoji(payload.emoji)
-    if choice is None or payload.guild_id is None:
-        return
-
-    guild_config = get_guild_config(payload.guild_id)
-
-    if not is_tracked_vote_message(guild_config, payload.message_id):
-        return
-
-    if get_stored_user_vote(payload.guild_id, payload.message_id, payload.user_id) != choice:
-        return
-
-    counts = remove_reaction_vote(payload.guild_id, payload.message_id, payload.user_id, choice)
-
-    try:
-        message = await fetch_vote_message(payload.channel_id, payload.message_id)
-    except discord.DiscordException as error:
-        print(f"Could not fetch vote message: {error}")
-        return
-
-    if message is not None:
-        await update_vote_message_embed(message, counts)
+    return
 
 
 @bot.tree.command(name="value", description="Check a Military Tycoon item value from mttvalues.com.")
