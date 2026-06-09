@@ -88,7 +88,7 @@ class VoteBot(discord.Client):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.reactions = True
-        super().__init__(intents=intents)
+        super().__init__(intents=intents, activity=discord.Game(name="/value | mttvalues.com"))
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self) -> None:
@@ -852,6 +852,37 @@ def create_vote_embed(
     return embed
 
 
+def create_value_embed(item: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title=str(item.get("name", "Unknown Item")),
+        url="https://mttvalues.com/",
+        color=discord.Color(GRAY_COLOR),
+    )
+
+    embed.add_field(name="\U0001f48e Value", value=format_value_range(item), inline=True)
+    embed.add_field(name="Average", value=format_number(average_value(item)), inline=True)
+    embed.add_field(name="Rarity", value=format_item_rarity(item), inline=True)
+    embed.add_field(name="\U0001f4c8 Demand", value=format_score(item.get("demand")), inline=True)
+    embed.add_field(name="\u2699\ufe0f Functionality", value=format_score(item.get("functionality")), inline=True)
+
+    tags = normalize_string_list(item.get("tags"))
+    embed.add_field(name="\U0001f3f7\ufe0f Status Tags", value=", ".join(tags) if tags else "No tags", inline=False)
+
+    image = item.get("image", "")
+    if isinstance(image, str) and image.startswith("http"):
+        embed.set_image(url=image)
+
+    updated_at = item.get("updated_at")
+    if isinstance(updated_at, str) and updated_at:
+        try:
+            embed.timestamp = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+
+    embed.set_footer(text="Source: mttvalues.com")
+    return embed
+
+
 def get_vote_color(counts: dict[str, int]) -> int:
     max_votes = max(counts.get(choice, 0) for choice in VOTE_CHOICES)
     if max_votes == 0:
@@ -1015,6 +1046,46 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> Non
 
     if message is not None:
         await update_vote_message_embed(message, counts)
+
+
+@bot.tree.command(name="value", description="Check a Military Tycoon item value from mttvalues.com.")
+@app_commands.describe(item="The item name to look up.")
+async def value(interaction: discord.Interaction, item: str):
+    await interaction.response.defer()
+
+    try:
+        items = await get_mttvalues_items()
+    except Exception as error:
+        print(f"Could not fetch MTT Values items for /value: {error}")
+        await interaction.followup.send("Could not fetch mttvalues.com right now.", ephemeral=True)
+        return
+
+    matched_item = find_mttvalues_item(items, item)
+    if matched_item is None:
+        suggestions = match_vehicle_names(unique_vehicle_names(items), item)
+        if suggestions:
+            suggestion_text = "\n".join(f"- {name}" for name in suggestions[:5])
+            await interaction.followup.send(
+                f"Could not find `{item}`. Did you mean:\n{suggestion_text}",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(f"Could not find `{item}` on mttvalues.com.", ephemeral=True)
+        return
+
+    await interaction.followup.send(embed=create_value_embed(matched_item))
+
+
+@value.autocomplete("item")
+async def value_item_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    names = await get_mttvalues_autocomplete_names()
+    return [
+        app_commands.Choice(name=truncate_choice_text(name), value=truncate_choice_text(name))
+        for name in match_vehicle_names(names, current)
+    ]
 
 
 @bot.tree.command(name="channel", description="Choose the channel for automatic votes.")
