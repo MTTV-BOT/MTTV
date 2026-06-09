@@ -36,8 +36,8 @@ DATA_DIR = Path(os.getenv("DATA_DIR", str(Path(__file__).parent / "data")))
 CONFIG_FILE = DATA_DIR / "vote_config.json"
 VOTE_TEXT = ENV_VOTE_TEXT or "vote"
 PROPOSAL_SUBMITTER = os.getenv("PROPOSAL_SUBMITTER", "merkberg@mttvalues.com").strip() or "merkberg@mttvalues.com"
-APPROVE_REACTION = "\u2705"
-DENY_REACTION = "\u274c"
+APPROVE_REACTION = "\u2b06\ufe0f"
+DENY_REACTION = "\u2b07\ufe0f"
 APPROVE_CHOICE = "approve"
 DENY_CHOICE = "deny"
 VOTE_CHOICES = (APPROVE_CHOICE, DENY_CHOICE)
@@ -59,6 +59,7 @@ RARITY_MATCH_KEYS = {
 GRAY_COLOR = 0x808080
 GREEN_COLOR = 0x2ECC71
 RED_COLOR = 0xE74C3C
+VALUE_EMBED_COLOR = 0xFF4438
 MAX_TRACKED_VOTES = 200
 AUTOCOMPLETE_CHOICE_LIMIT = 25
 AUTOCOMPLETE_CACHE_SECONDS = 600
@@ -853,33 +854,41 @@ def create_vote_embed(
 
 
 def create_value_embed(item: dict) -> discord.Embed:
+    updated_at_text = "Unknown"
+    updated_at = item.get("updated_at")
+    if isinstance(updated_at, str) and updated_at:
+        try:
+            updated_at_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            hour_text = updated_at_dt.strftime("%I").lstrip("0") or "0"
+            minute_text = updated_at_dt.strftime("%M")
+            am_pm_text = updated_at_dt.strftime("%p")
+            updated_at_text = f"{updated_at_dt.month}/{updated_at_dt.day}/{updated_at_dt.year} {hour_text}:{minute_text} {am_pm_text}"
+        except ValueError:
+            updated_at_text = updated_at
+
+    demand_text = format_score(item.get("demand"))
+    functionality_text = format_score(item.get("functionality"))
+
     embed = discord.Embed(
         title=str(item.get("name", "Unknown Item")),
         url="https://mttvalues.com/",
-        color=discord.Color(GRAY_COLOR),
+        color=discord.Color(VALUE_EMBED_COLOR),
     )
 
-    embed.add_field(name="\U0001f48e Value", value=format_value_range(item), inline=True)
-    embed.add_field(name="Average", value=format_number(average_value(item)), inline=True)
-    embed.add_field(name="Rarity", value=format_item_rarity(item), inline=True)
-    embed.add_field(name="\U0001f4c8 Demand", value=format_score(item.get("demand")), inline=True)
-    embed.add_field(name="\u2699\ufe0f Functionality", value=format_score(item.get("functionality")), inline=True)
-
-    tags = normalize_string_list(item.get("tags"))
-    embed.add_field(name="\U0001f3f7\ufe0f Status Tags", value=", ".join(tags) if tags else "No tags", inline=False)
+    embed.add_field(name="Value Range", value=format_value_range(item), inline=True)
+    embed.add_field(name="Average Value", value=format_number(average_value(item)), inline=True)
+    embed.add_field(name="Demand", value=f"{demand_text}/10" if demand_text != "N/A" else "N/A", inline=True)
+    embed.add_field(
+        name="Functionality",
+        value=f"{functionality_text}/10" if functionality_text != "N/A" else "N/A",
+        inline=True,
+    )
 
     image = item.get("image", "")
     if isinstance(image, str) and image.startswith("http"):
         embed.set_image(url=image)
 
-    updated_at = item.get("updated_at")
-    if isinstance(updated_at, str) and updated_at:
-        try:
-            embed.timestamp = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-        except ValueError:
-            pass
-
-    embed.set_footer(text="Source: mttvalues.com")
+    embed.set_footer(text=f"Source: mttvalues.com | Last updated • {updated_at_text}")
     return embed
 
 
