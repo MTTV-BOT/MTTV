@@ -1216,7 +1216,7 @@ async def value(interaction: discord.Interaction, item: str):
             await interaction.followup.send(f"Could not find `{item}` on mttvalues.com.", ephemeral=True)
         return
 
-    await interaction.followup.send(embed=create_value_embed(matched_item), view=create_value_badge_view(matched_item))
+    await interaction.followup.send(embed=create_value_embed(matched_item))
 
 
 @value.autocomplete("item")
