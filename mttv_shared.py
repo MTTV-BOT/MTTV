@@ -111,7 +111,7 @@ RARITY_EMBED_COLORS = {
     "rare": 0x3498DB,
     "epic": 0x9B59B6,
     "legendary": 0xF1C40F,
-    "exotic": 0x2ECC71,
+    "exotic": 0xFF3EB5,
     "limited": 0xE74C3C,
 }
 MAX_TRACKED_VOTES = 200
