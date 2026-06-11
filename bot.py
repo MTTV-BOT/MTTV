@@ -35,7 +35,6 @@ ENV_VOTE_TEXT = os.getenv("VOTE_TEXT", "").strip()
 DATA_DIR = Path(os.getenv("DATA_DIR", str(Path(__file__).parent / "data")))
 CONFIG_FILE = DATA_DIR / "vote_config.json"
 VOTE_TEXT = ENV_VOTE_TEXT or "vote"
-PROPOSAL_SUBMITTER = os.getenv("PROPOSAL_SUBMITTER", "merkberg@mttvalues.com").strip() or "merkberg@mttvalues.com"
 APPROVE_REACTION = "\u2b06\ufe0f"
 DENY_REACTION = "\u2b07\ufe0f"
 NEUTRAL_REACTION = "\u2194\ufe0f"
@@ -825,10 +824,7 @@ def create_vote_description(
 ) -> str:
     value_text = "No value listed" if item is None else format_value_change(item, new_value_min, new_value_max)
 
-    proposal_submitter = (submitter or PROPOSAL_SUBMITTER).strip() or PROPOSAL_SUBMITTER
-
     return (
-        f"Submitted by {proposal_submitter}\n\n"
         "💎 **Value**\n"
         f"{value_text}"
     )
@@ -836,9 +832,9 @@ def create_vote_description(
 
 def create_vote_options_text() -> str:
     return (
-        f"{APPROVE_REACTION} **Approve** — react to approve\n\n"
-        f"{NEUTRAL_REACTION} **Neutral** — react for no change\n\n"
-        f"{DENY_REACTION} **Deny** — react to deny"
+        f"{APPROVE_REACTION} **Increase** — the value should increase\n\n"
+        f"{NEUTRAL_REACTION} **Keep** — the value should stay the same\n\n"
+        f"{DENY_REACTION} **Decrease** — the value should decrease"
     )
 
 
@@ -854,7 +850,7 @@ def create_vote_embed(
 ) -> discord.Embed:
     if item:
         embed = discord.Embed(
-            title=f"🗳️ Value Change Proposal: {format_vehicle_vote_name(item)}",
+            title=f"🗳️ Value Vote: {format_vehicle_vote_name(item)}",
             description=create_vote_description(item, new_value_min, new_value_max, submitter),
             color=discord.Color(color if color is not None else GRAY_COLOR),
         )
@@ -876,7 +872,7 @@ def create_vote_embed(
         return embed
 
     embed = discord.Embed(
-        title=f"🗳️ Value Change Proposal: {VOTE_TEXT}",
+        title=f"🗳️ Value Vote: {VOTE_TEXT}",
         description=create_vote_description(submitter=submitter),
         color=discord.Color(color if color is not None else GRAY_COLOR),
     )
@@ -907,21 +903,21 @@ def create_value_embed(item: dict) -> discord.Embed:
     embed = discord.Embed(
         title=str(item.get("name", "Unknown Item")),
         url="https://mttvalues.com/",
+        description=f"\U0001f48e **Value**\n{format_value_range(item)}",
         color=discord.Color(VALUE_EMBED_COLOR),
     )
 
-    embed.add_field(name="Value Range", value=format_value_range(item), inline=True)
-    embed.add_field(name="Average Value", value=format_number(average_value(item)), inline=True)
-    embed.add_field(name="Demand", value=f"{demand_text}/10" if demand_text != "N/A" else "N/A", inline=True)
+    embed.add_field(name="\U0001f4c8 Demand", value=f"{demand_text}/10" if demand_text != "N/A" else "N/A", inline=True)
     embed.add_field(
-        name="Functionality",
+        name="\u2699\ufe0f Functionality",
         value=f"{functionality_text}/10" if functionality_text != "N/A" else "N/A",
         inline=True,
     )
+    embed.add_field(name="\U0001f3f7\ufe0f Status Tags", value=format_status_tags(item), inline=False)
 
     image = item.get("image", "")
     if isinstance(image, str) and image.startswith("http"):
-        embed.set_image(url=image)
+        embed.set_thumbnail(url=image)
 
     embed.set_footer(text=f"Source: mttvalues.com | Last updated • {updated_at_text}")
     return embed
@@ -957,10 +953,8 @@ def create_vote_description(
     submitter: str | None = None,
 ) -> str:
     value_text = "No value listed" if item is None else format_value_change(item, new_value_min, new_value_max)
-    proposal_submitter = (submitter or PROPOSAL_SUBMITTER).strip() or PROPOSAL_SUBMITTER
 
     return (
-        f"Submitted by {proposal_submitter}\n\n"
         "\U0001f48e **Value**\n"
         f"{value_text}"
     )
@@ -968,9 +962,9 @@ def create_vote_description(
 
 def create_vote_options_text() -> str:
     return (
-        f"{APPROVE_REACTION} **Approve** \u2014 react to approve\n\n"
-        f"{NEUTRAL_REACTION} **Neutral** \u2014 react for no change\n\n"
-        f"{DENY_REACTION} **Deny** \u2014 react to deny"
+        f"{APPROVE_REACTION} **Increase** \u2014 the value should increase\n\n"
+        f"{NEUTRAL_REACTION} **Keep** \u2014 the value should stay the same\n\n"
+        f"{DENY_REACTION} **Decrease** \u2014 the value should decrease"
     )
 
 
@@ -986,26 +980,33 @@ def create_vote_embed(
 ) -> discord.Embed:
     title_name = format_vehicle_vote_name(item) if item else VOTE_TEXT
     embed = discord.Embed(
-        title=f"\U0001f5f3\ufe0f Value Change Proposal: {title_name}",
+        title=f"\U0001f5f3\ufe0f Value Vote: {title_name}",
         description=create_vote_description(item, new_value_min, new_value_max, submitter),
         color=discord.Color(color if color is not None else GRAY_COLOR),
-        timestamp=datetime.now(timezone.utc),
     )
 
     if item:
-        demand = format_score_change(item.get("demand"), new_demand)
-        functionality = format_score_change(item.get("functionality"), new_functionality)
+        demand_text = format_score_change(item.get("demand"), new_demand)
+        functionality_text = format_score_change(item.get("functionality"), new_functionality)
+        demand = f"{demand_text}/10" if demand_text != "N/A" and "->" not in demand_text and "\u2192" not in demand_text else demand_text
+        functionality = (
+            f"{functionality_text}/10"
+            if functionality_text != "N/A" and "->" not in functionality_text and "\u2192" not in functionality_text
+            else functionality_text
+        )
+        tags = format_status_tags(item) if not status_tags else status_tags.strip()
         image = item.get("image", "")
     else:
         demand = "**N/A**"
         functionality = "**N/A**"
+        tags = "No tags"
         image = ""
 
     embed.add_field(name="\U0001f4c8 Demand", value=demand, inline=True)
     embed.add_field(name="\u2699\ufe0f Functionality", value=functionality, inline=True)
     embed.add_field(
         name="\U0001f3f7\ufe0f Status Tags",
-        value=(status_tags or "No changes").strip() or "No changes",
+        value=tags or "No tags",
         inline=False,
     )
     embed.add_field(name="\u200b", value=create_vote_options_text(), inline=False)
@@ -1020,6 +1021,16 @@ def create_vote_embed(
 def titleize_badge_label(value: object) -> str:
     text = str(value).strip().replace("_", " ").replace("-", " ")
     return " ".join(part.capitalize() for part in text.split())
+
+
+def format_status_tags(item: dict) -> str:
+    tags: list[str] = []
+    for tag in normalize_string_list(item.get("tags")):
+        label = titleize_badge_label(tag)
+        if label:
+            tags.append(label)
+
+    return ", ".join(tags) if tags else "No tags"
 
 
 def create_value_badge_view(item: dict) -> discord.ui.View | None:
@@ -1323,22 +1334,10 @@ async def rarity_command(
 @app_commands.default_permissions(manage_guild=True)
 @app_commands.describe(
     vehicle_name="The vehicle name to use for the vote.",
-    new_value_min="Optional new minimum value for the proposal.",
-    new_value_max="Optional new maximum value for the proposal.",
-    demand="Optional new demand score from 0 to 10.",
-    functionality="Optional new functionality score from 0 to 10.",
-    status_tags="Optional status tag changes, or leave empty for no changes.",
-    submitter="Optional submitter text shown on the proposal.",
 )
 async def voteforce(
     interaction: discord.Interaction,
     vehicle_name: str,
-    new_value_min: int | None = None,
-    new_value_max: int | None = None,
-    demand: int | None = None,
-    functionality: int | None = None,
-    status_tags: str | None = None,
-    submitter: str | None = None,
 ):
     if not interaction.guild:
         await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
@@ -1348,16 +1347,6 @@ async def voteforce(
         return
 
     await interaction.response.defer(ephemeral=True)
-
-    for label, score in (("demand", demand), ("functionality", functionality)):
-        if score is not None and not 0 <= score <= 10:
-            await interaction.followup.send(f"`{label}` must be between 0 and 10.", ephemeral=True)
-            return
-
-    for label, value in (("new_value_min", new_value_min), ("new_value_max", new_value_max)):
-        if value is not None and value < 0:
-            await interaction.followup.send(f"`{label}` must be 0 or higher.", ephemeral=True)
-            return
 
     guild_config = get_guild_config(interaction.guild.id)
     channel_id = guild_config.get("channel_id")
@@ -1396,16 +1385,7 @@ async def voteforce(
         return
 
     try:
-        message = await send_vote(
-            channel,
-            item=item,
-            new_value_min=new_value_min,
-            new_value_max=new_value_max,
-            new_demand=demand,
-            new_functionality=functionality,
-            status_tags=status_tags,
-            submitter=submitter,
-        )
+        message = await send_vote(channel, item=item)
     except discord.DiscordException as error:
         print(f"Could not send forced vote for guild {interaction.guild.id}: {error}")
         await interaction.followup.send("Could not send the forced vote.", ephemeral=True)
