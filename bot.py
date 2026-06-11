@@ -1,5 +1,6 @@
 import asyncio
 import builtins
+import io
 import json
 import os
 import random
@@ -34,6 +35,8 @@ ENV_VOTE_TEXT = os.getenv("VOTE_TEXT", "").strip()
 
 DATA_DIR = Path(os.getenv("DATA_DIR", str(Path(__file__).parent / "data")))
 CONFIG_FILE = DATA_DIR / "vote_config.json"
+VALUE_IMAGE_ATTACHMENT = "mttv-value-image.png"
+VALUE_IMAGE_SIZE = (760, 430)
 VOTE_TEXT = ENV_VOTE_TEXT or "vote"
 APPROVE_REACTION = "\u2b06\ufe0f"
 DENY_REACTION = "\u2b07\ufe0f"
@@ -884,7 +887,7 @@ def create_vote_embed(
     return embed
 
 
-def create_value_embed(item: dict) -> discord.Embed:
+def create_value_embed(item: dict, *, use_attached_image: bool = False) -> discord.Embed:
     updated_at_text = "Unknown"
     updated_at = item.get("updated_at")
     if isinstance(updated_at, str) and updated_at:
@@ -917,10 +920,58 @@ def create_value_embed(item: dict) -> discord.Embed:
 
     image = item.get("image", "")
     if isinstance(image, str) and image.startswith("http"):
-        embed.set_image(url=image)
+        if use_attached_image:
+            embed.set_image(url=f"attachment://{VALUE_IMAGE_ATTACHMENT}")
+        else:
+            embed.set_image(url=image)
 
     embed.set_footer(text=f"Source: mttvalues.com | Last updated • {updated_at_text}")
     return embed
+
+
+def download_image_bytes(image_url: str) -> bytes:
+    request = Request(image_url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(request, timeout=15) as response:
+        return response.read()
+
+
+async def create_large_value_image_file(item: dict) -> discord.File | None:
+    image_url = item.get("image", "")
+    if not isinstance(image_url, str) or not image_url.startswith("http"):
+        return None
+
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return None
+
+    try:
+        raw_image = await asyncio.to_thread(download_image_bytes, image_url)
+        with Image.open(io.BytesIO(raw_image)) as source:
+            source = ImageOps.exif_transpose(source).convert("RGBA")
+            max_width, max_height = VALUE_IMAGE_SIZE
+            scale = min(max_width / source.width, max_height / source.height)
+            target_size = (
+                max(1, int(source.width * scale)),
+                max(1, int(source.height * scale)),
+            )
+            resample_filter = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            resized = source.resize(target_size, resample_filter)
+
+            canvas = Image.new("RGBA", VALUE_IMAGE_SIZE, (0, 0, 0, 0))
+            offset = (
+                (max_width - target_size[0]) // 2,
+                (max_height - target_size[1]) // 2,
+            )
+            canvas.alpha_composite(resized, offset)
+
+            output = io.BytesIO()
+            canvas.save(output, format="PNG")
+            output.seek(0)
+            return discord.File(output, filename=VALUE_IMAGE_ATTACHMENT)
+    except Exception as error:
+        print(f"Could not create large value image: {error}")
+        return None
 
 
 def format_score_change(old_value: object, new_value: object | None = None) -> str:
@@ -1271,7 +1322,12 @@ async def value(interaction: discord.Interaction, item: str):
             await interaction.followup.send(f"Could not find `{item}` on mttvalues.com.", ephemeral=True)
         return
 
-    await interaction.followup.send(embed=create_value_embed(matched_item))
+    value_image = await create_large_value_image_file(matched_item)
+    value_embed = create_value_embed(matched_item, use_attached_image=value_image is not None)
+    if value_image is not None:
+        await interaction.followup.send(embed=value_embed, file=value_image)
+    else:
+        await interaction.followup.send(embed=value_embed)
 
 
 @value.autocomplete("item")
