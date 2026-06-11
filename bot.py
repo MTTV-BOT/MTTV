@@ -130,6 +130,10 @@ MTTVALUES_FIELD_MASKS = (
 )
 MTTVALUES_AUTOCOMPLETE_NAMES: list[str] = []
 MTTVALUES_AUTOCOMPLETE_LOADED_AT = 0.0
+MTTVALUES_AUTOCOMPLETE_REFRESH_TASK: asyncio.Task | None = None
+MTTVALUES_ITEMS_CACHE: list[dict] = []
+MTTVALUES_ITEMS_LOADED_AT = 0.0
+MTTVALUES_ITEMS_CACHE_SECONDS = 300
 
 
 class VoteBot(discord.Client):
@@ -688,30 +692,50 @@ def fetch_mttvalues_items_sync() -> list[dict]:
     return items
 
 
-async def get_mttvalues_items() -> list[dict]:
-    return await asyncio.to_thread(fetch_mttvalues_items_sync)
+async def refresh_mttvalues_items_cache() -> list[dict]:
+    global MTTVALUES_AUTOCOMPLETE_LOADED_AT
+    global MTTVALUES_AUTOCOMPLETE_NAMES
+    global MTTVALUES_ITEMS_CACHE
+    global MTTVALUES_ITEMS_LOADED_AT
+
+    items = await asyncio.to_thread(fetch_mttvalues_items_sync)
+    loaded_at = time.time()
+    MTTVALUES_ITEMS_CACHE = items
+    MTTVALUES_ITEMS_LOADED_AT = loaded_at
+    MTTVALUES_AUTOCOMPLETE_NAMES = unique_vehicle_names(items)
+    MTTVALUES_AUTOCOMPLETE_LOADED_AT = loaded_at
+    return items
+
+
+async def get_mttvalues_items(*, force_refresh: bool = False) -> list[dict]:
+    cache_age = time.time() - MTTVALUES_ITEMS_LOADED_AT
+    if not force_refresh and MTTVALUES_ITEMS_CACHE and cache_age < MTTVALUES_ITEMS_CACHE_SECONDS:
+        return MTTVALUES_ITEMS_CACHE
+
+    return await refresh_mttvalues_items_cache()
 
 
 async def refresh_mttvalues_autocomplete_cache() -> list[str]:
-    global MTTVALUES_AUTOCOMPLETE_LOADED_AT, MTTVALUES_AUTOCOMPLETE_NAMES
-
     try:
-        items = await get_mttvalues_items()
+        await refresh_mttvalues_items_cache()
     except Exception as error:
         print(f"Could not refresh MTTValues autocomplete: {error}")
         return MTTVALUES_AUTOCOMPLETE_NAMES
 
-    MTTVALUES_AUTOCOMPLETE_NAMES = unique_vehicle_names(items)
-    MTTVALUES_AUTOCOMPLETE_LOADED_AT = time.time()
     return MTTVALUES_AUTOCOMPLETE_NAMES
 
 
 async def get_mttvalues_autocomplete_names() -> list[str]:
+    global MTTVALUES_AUTOCOMPLETE_REFRESH_TASK
+
     cache_age = time.time() - MTTVALUES_AUTOCOMPLETE_LOADED_AT
     if MTTVALUES_AUTOCOMPLETE_NAMES and cache_age < AUTOCOMPLETE_CACHE_SECONDS:
         return MTTVALUES_AUTOCOMPLETE_NAMES
 
-    return await refresh_mttvalues_autocomplete_cache()
+    if MTTVALUES_AUTOCOMPLETE_REFRESH_TASK is None or MTTVALUES_AUTOCOMPLETE_REFRESH_TASK.done():
+        MTTVALUES_AUTOCOMPLETE_REFRESH_TASK = asyncio.create_task(refresh_mttvalues_autocomplete_cache())
+
+    return MTTVALUES_AUTOCOMPLETE_NAMES
 
 
 async def get_random_mttvalues_item(rarity_filter: str = RARITY_RANDOM) -> dict | None:
@@ -1314,16 +1338,57 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> Non
         print(f"Could not update vote message color: {error}")
 
 
+async def safe_defer_interaction(interaction: discord.Interaction, *, ephemeral: bool = False) -> bool:
+    try:
+        await interaction.response.defer(ephemeral=ephemeral)
+        return True
+    except discord.NotFound:
+        return False
+    except discord.InteractionResponded:
+        return True
+
+
+async def send_interaction_result(
+    interaction: discord.Interaction,
+    *,
+    content: str | None = None,
+    embed: discord.Embed | None = None,
+    file: discord.File | None = None,
+    ephemeral: bool = False,
+    deferred: bool = True,
+) -> None:
+    if deferred:
+        try:
+            await interaction.followup.send(content=content, embed=embed, file=file, ephemeral=ephemeral)
+            return
+        except discord.NotFound:
+            pass
+
+    channel = interaction.channel
+    if channel is None or not hasattr(channel, "send"):
+        return
+
+    try:
+        await channel.send(content=content, embed=embed, file=file)
+    except discord.DiscordException as error:
+        print(f"Could not send interaction fallback message: {error}")
+
+
 @bot.tree.command(name="value", description="Check a Military Tycoon item value from mttvalues.com.")
 @app_commands.describe(item="The item name to look up.")
 async def value(interaction: discord.Interaction, item: str):
-    await interaction.response.defer()
+    deferred = await safe_defer_interaction(interaction)
 
     try:
         items = await get_mttvalues_items()
     except Exception as error:
         print(f"Could not fetch MTT Values items for /value: {error}")
-        await interaction.followup.send("Could not fetch mttvalues.com right now.", ephemeral=True)
+        await send_interaction_result(
+            interaction,
+            content="Could not fetch mttvalues.com right now.",
+            ephemeral=True,
+            deferred=deferred,
+        )
         return
 
     matched_item = find_mttvalues_item(items, item)
@@ -1331,20 +1396,27 @@ async def value(interaction: discord.Interaction, item: str):
         suggestions = match_vehicle_names(unique_vehicle_names(items), item)
         if suggestions:
             suggestion_text = "\n".join(f"- {name}" for name in suggestions[:5])
-            await interaction.followup.send(
-                f"Could not find `{item}`. Did you mean:\n{suggestion_text}",
+            await send_interaction_result(
+                interaction,
+                content=f"Could not find `{item}`. Did you mean:\n{suggestion_text}",
                 ephemeral=True,
+                deferred=deferred,
             )
         else:
-            await interaction.followup.send(f"Could not find `{item}` on mttvalues.com.", ephemeral=True)
+            await send_interaction_result(
+                interaction,
+                content=f"Could not find `{item}` on mttvalues.com.",
+                ephemeral=True,
+                deferred=deferred,
+            )
         return
 
     value_image = await create_large_value_image_file(matched_item)
     value_embed = create_value_embed(matched_item, use_attached_image=value_image is not None)
     if value_image is not None:
-        await interaction.followup.send(embed=value_embed, file=value_image)
+        await send_interaction_result(interaction, embed=value_embed, file=value_image, deferred=deferred)
     else:
-        await interaction.followup.send(embed=value_embed)
+        await send_interaction_result(interaction, embed=value_embed, deferred=deferred)
 
 
 @value.autocomplete("item")
