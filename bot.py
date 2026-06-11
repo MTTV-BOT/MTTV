@@ -99,6 +99,14 @@ GRAY_COLOR = 0x808080
 GREEN_COLOR = 0x2ECC71
 RED_COLOR = 0xE74C3C
 VALUE_EMBED_COLOR = 0xFF4438
+RARITY_EMBED_COLORS = {
+    "common": 0x95A5A6,
+    "rare": 0x3498DB,
+    "epic": 0x9B59B6,
+    "legendary": 0xF1C40F,
+    "exotic": 0x2ECC71,
+    "limited": 0xE74C3C,
+}
 MAX_TRACKED_VOTES = 200
 AUTOCOMPLETE_CHOICE_LIMIT = 25
 AUTOCOMPLETE_CACHE_SECONDS = 600
@@ -543,6 +551,15 @@ def format_item_rarity(item: dict) -> str:
     return ", ".join(values) if values else "Unknown"
 
 
+def item_rarity_embed_color(item: dict, default_color: int = VALUE_EMBED_COLOR) -> int:
+    for rarity in item_rarity_values(item):
+        color = RARITY_EMBED_COLORS.get(normalize_rarity_key(rarity))
+        if color is not None:
+            return color
+
+    return default_color
+
+
 def item_matches_rarity(item: dict, rarity_filter: str) -> bool:
     if rarity_filter == RARITY_RANDOM:
         return True
@@ -907,7 +924,7 @@ def create_value_embed(item: dict, *, use_attached_image: bool = False) -> disco
         title=str(item.get("name", "Unknown Item")),
         url="https://mttvalues.com/",
         description=f"\U0001f48e **Value**\n{format_value_range(item)}",
-        color=discord.Color(VALUE_EMBED_COLOR),
+        color=discord.Color(item_rarity_embed_color(item)),
     )
 
     embed.add_field(name="\U0001f4c8 Demand", value=f"{demand_text}/10" if demand_text != "N/A" else "N/A", inline=True)
