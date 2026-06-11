@@ -917,7 +917,7 @@ def create_value_embed(item: dict) -> discord.Embed:
 
     image = item.get("image", "")
     if isinstance(image, str) and image.startswith("http"):
-        embed.set_thumbnail(url=image)
+        embed.set_image(url=image)
 
     embed.set_footer(text=f"Source: mttvalues.com | Last updated • {updated_at_text}")
     return embed
@@ -1183,12 +1183,67 @@ async def send_vote(
 
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
-    return
+    if payload.guild_id is None or bot.user is None or payload.user_id == bot.user.id:
+        return
+
+    choice = choice_from_emoji(payload.emoji)
+    if choice is None:
+        return
+
+    guild_config = get_guild_config(payload.guild_id)
+    if not is_tracked_vote_message(guild_config, payload.message_id):
+        return
+
+    try:
+        message = await fetch_vote_message(payload.channel_id, payload.message_id)
+    except discord.DiscordException as error:
+        print(f"Could not fetch vote message for reaction add: {error}")
+        return
+
+    if message is None:
+        return
+
+    counts = set_reaction_vote(payload.guild_id, payload.message_id, payload.user_id, choice)
+
+    try:
+        await remove_other_vote_reactions(message, payload, choice)
+    except discord.DiscordException as error:
+        print(f"Could not clean old vote reactions: {error}")
+
+    try:
+        await update_vote_message_embed(message, counts)
+    except discord.DiscordException as error:
+        print(f"Could not update vote message color: {error}")
 
 
 @bot.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> None:
-    return
+    if payload.guild_id is None or bot.user is None or payload.user_id == bot.user.id:
+        return
+
+    choice = choice_from_emoji(payload.emoji)
+    if choice is None:
+        return
+
+    guild_config = get_guild_config(payload.guild_id)
+    if not is_tracked_vote_message(guild_config, payload.message_id):
+        return
+
+    counts = remove_reaction_vote(payload.guild_id, payload.message_id, payload.user_id, choice)
+
+    try:
+        message = await fetch_vote_message(payload.channel_id, payload.message_id)
+    except discord.DiscordException as error:
+        print(f"Could not fetch vote message for reaction remove: {error}")
+        return
+
+    if message is None:
+        return
+
+    try:
+        await update_vote_message_embed(message, counts)
+    except discord.DiscordException as error:
+        print(f"Could not update vote message color: {error}")
 
 
 @bot.tree.command(name="value", description="Check a Military Tycoon item value from mttvalues.com.")
