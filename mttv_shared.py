@@ -1,10 +1,3 @@
-"""Shared runtime, config, and mttvalues.com helpers for the MTTV bot.
-
-Feature modules register commands/events against the shared ``bot`` object.
-Keep this file free of slash command definitions so value and vote features can be
-enabled or removed independently.
-"""
-
 import asyncio
 import builtins
 import io
