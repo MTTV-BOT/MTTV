@@ -9,6 +9,7 @@ import asyncio
 import builtins
 import io
 import json
+import logging
 import os
 import random
 import time
@@ -31,6 +32,19 @@ def print_flush(*args: object, **kwargs: object) -> None:
 
 print = print_flush
 load_dotenv()
+
+
+class StaleAutocompleteFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "discord.app_commands.tree":
+            return True
+        message = record.getMessage()
+        if "Ignoring exception in autocomplete" in message:
+            return False
+        return True
+
+
+logging.getLogger("discord.app_commands.tree").addFilter(StaleAutocompleteFilter())
 
 TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 GUILD_ID = os.getenv("GUILD_ID", "").strip()
@@ -1343,7 +1357,14 @@ async def send_interaction_result(
         return
 
     try:
-        await interaction.followup.send(content=content, embed=embed, file=file, ephemeral=ephemeral)
+        kwargs = {
+            "content": content,
+            "embed": embed,
+            "ephemeral": ephemeral,
+        }
+        if file is not None:
+            kwargs["file"] = file
+        await interaction.followup.send(**kwargs)
     except discord.NotFound:
         return
 
