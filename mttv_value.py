@@ -1,8 +1,3 @@
-"""Value lookup feature for the MTTV bot.
-
-This module can be removed without breaking the vote feature.
-"""
-
 from mttv_shared import *
 
 @bot.tree.command(name="value", description="Check a Military Tycoon item value from mttvalues.com.")
