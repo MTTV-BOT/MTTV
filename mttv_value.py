@@ -43,3 +43,17 @@ async def value(interaction: discord.Interaction, item: str):
         return
 
     await send_interaction_result(interaction, embed=create_value_embed(matched_item), deferred=deferred)
+
+
+@value.autocomplete("item")
+async def value_item_autocomplete(interaction: discord.Interaction, current: str):
+    names = get_cached_mttvalues_autocomplete_names()
+    if not names:
+        schedule_mttvalues_cache_refresh()
+        return []
+
+    matches = match_vehicle_names(names, current)
+    return [
+        app_commands.Choice(name=truncate_choice_text(name), value=truncate_choice_text(name))
+        for name in matches[:AUTOCOMPLETE_CHOICE_LIMIT]
+    ]
