@@ -42,8 +42,7 @@ ENV_VOTE_TEXT = os.getenv("VOTE_TEXT", "").strip()
 
 DATA_DIR = Path(os.getenv("DATA_DIR", str(Path(__file__).parent / "data")))
 CONFIG_FILE = DATA_DIR / "vote_config.json"
-MTTVALUES_CACHE_FILE = DATA_DIR / "mttvalues_items.json"
-MTTVALUES_REFRESH_SECONDS = max(60, int(os.getenv("MTTVALUES_REFRESH_SECONDS", "86400")))
+MTTVALUES_REFRESH_SECONDS = max(60, int(os.getenv("MTTVALUES_REFRESH_SECONDS", "1800")))
 VALUE_IMAGE_ATTACHMENT = "mttv-value-image.png"
 VALUE_IMAGE_SIZE = (760, 430)
 VOTE_TEXT = ENV_VOTE_TEXT or "vote"
@@ -176,7 +175,6 @@ class VoteBot(discord.Client):
         except discord.DiscordException as error:
             print(f"Global command sync failed: {error}")
 
-        load_mttvalues_cache_from_disk()
         self.loop.create_task(refresh_mttvalues_periodically())
         for task_factory in STARTUP_TASKS:
             self.loop.create_task(task_factory())
@@ -719,66 +717,13 @@ def update_mttvalues_memory_cache(items: list[dict], loaded_at: float | None = N
     return items
 
 
-def load_mttvalues_cache_from_disk() -> list[dict]:
-    if MTTVALUES_ITEMS_CACHE:
-        return MTTVALUES_ITEMS_CACHE
-
-    try:
-        payload = json.loads(MTTVALUES_CACHE_FILE.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return []
-    except Exception as error:
-        print(f"Could not load MTTValues disk cache: {error}")
-        return []
-
-    if isinstance(payload, dict):
-        raw_items = payload.get("items", [])
-        try:
-            loaded_at = float(payload.get("loaded_at") or 0) or time.time()
-        except (TypeError, ValueError):
-            loaded_at = time.time()
-    else:
-        raw_items = payload
-        loaded_at = time.time()
-
-    if not isinstance(raw_items, list):
-        return []
-
-    items = [normalize_mttvalues_item(item) for item in raw_items if isinstance(item, dict)]
-    if not items:
-        return []
-
-    update_mttvalues_memory_cache(items, loaded_at)
-    print(f"Loaded {len(items)} MTTValues items from disk cache.")
-    return items
-
-
-def save_mttvalues_cache_to_disk(items: list[dict]) -> None:
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "loaded_at": time.time(),
-            "items": items,
-        }
-        temp_path = MTTVALUES_CACHE_FILE.with_suffix(".tmp")
-        temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        temp_path.replace(MTTVALUES_CACHE_FILE)
-    except Exception as error:
-        print(f"Could not save MTTValues disk cache: {error}")
-
-
 async def refresh_mttvalues_items_cache() -> list[dict]:
     items = await asyncio.to_thread(fetch_mttvalues_items_sync)
     update_mttvalues_memory_cache(items)
-    await asyncio.to_thread(save_mttvalues_cache_to_disk, items)
-    print(f"Refreshed {len(items)} MTTValues items and saved cache to disk.")
     return items
 
 
 async def get_mttvalues_items(*, force_refresh: bool = False) -> list[dict]:
-    if not MTTVALUES_ITEMS_CACHE:
-        load_mttvalues_cache_from_disk()
-
     cache_age = time.time() - MTTVALUES_ITEMS_LOADED_AT
     if not force_refresh and MTTVALUES_ITEMS_CACHE and cache_age < MTTVALUES_ITEMS_CACHE_SECONDS:
         return MTTVALUES_ITEMS_CACHE
@@ -795,15 +740,14 @@ async def refresh_mttvalues_autocomplete_cache() -> list[str]:
     try:
         await refresh_mttvalues_items_cache()
     except Exception as error:
-        print(f"Could not refresh MTTValues autocomplete: {error}")
+        if not MTTVALUES_ITEMS_CACHE:
+            print(f"Could not refresh MTTValues cache: {error}")
         return MTTVALUES_AUTOCOMPLETE_NAMES
 
     return MTTVALUES_AUTOCOMPLETE_NAMES
 
 
 def get_cached_mttvalues_autocomplete_names() -> list[str]:
-    if not MTTVALUES_AUTOCOMPLETE_NAMES:
-        load_mttvalues_cache_from_disk()
     return MTTVALUES_AUTOCOMPLETE_NAMES
 
 
@@ -825,19 +769,19 @@ async def get_mttvalues_autocomplete_names() -> list[str]:
 
 
 async def refresh_mttvalues_periodically() -> None:
-    load_mttvalues_cache_from_disk()
-
     try:
         await refresh_mttvalues_autocomplete_cache()
     except Exception as error:
-        print(f"Initial MTTValues refresh failed: {error}")
+        if not MTTVALUES_ITEMS_CACHE:
+            print(f"Initial MTTValues refresh failed: {error}")
 
     while True:
         await asyncio.sleep(MTTVALUES_REFRESH_SECONDS)
         try:
             await refresh_mttvalues_autocomplete_cache()
         except Exception as error:
-            print(f"Scheduled MTTValues refresh failed: {error}")
+            if not MTTVALUES_ITEMS_CACHE:
+                print(f"Scheduled MTTValues refresh failed: {error}")
 
 
 async def get_random_mttvalues_item(rarity_filter: str = RARITY_RANDOM) -> dict | None:
