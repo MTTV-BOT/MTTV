@@ -1,9 +1,3 @@
-"""MTTV bot entry point.
-
-The bot core is shared, while value lookup and voting are optional feature
-modules. If either feature file is removed, the other feature still starts.
-"""
-
 import importlib
 
 from mttv_shared import TOKEN, bot, print, start_health_server
