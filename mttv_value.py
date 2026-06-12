@@ -42,21 +42,4 @@ async def value(interaction: discord.Interaction, item: str):
             )
         return
 
-    value_image = await create_large_value_image_file(matched_item)
-    value_embed = create_value_embed(matched_item, use_attached_image=value_image is not None)
-    if value_image is not None:
-        await send_interaction_result(interaction, embed=value_embed, file=value_image, deferred=deferred)
-    else:
-        await send_interaction_result(interaction, embed=value_embed, deferred=deferred)
-
-
-@value.autocomplete("item")
-async def value_item_autocomplete(
-    interaction: discord.Interaction,
-    current: str,
-) -> list[app_commands.Choice[str]]:
-    names = await get_mttvalues_autocomplete_names()
-    return [
-        app_commands.Choice(name=truncate_choice_text(name), value=truncate_choice_text(name))
-        for name in match_vehicle_names(names, current)
-    ]
+    await send_interaction_result(interaction, embed=create_value_embed(matched_item), deferred=deferred)

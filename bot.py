@@ -10,7 +10,6 @@ from mttv_shared import TOKEN, bot, print, start_health_server
 
 OPTIONAL_FEATURE_MODULES = (
     "mttv_value",
-    "mttv_vote",
 )
 
 

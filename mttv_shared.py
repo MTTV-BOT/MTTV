@@ -975,7 +975,7 @@ def create_value_embed(item: dict, *, use_attached_image: bool = False) -> disco
         if use_attached_image:
             embed.set_image(url=f"attachment://{VALUE_IMAGE_ATTACHMENT}")
         else:
-            embed.set_image(url=image)
+            embed.set_thumbnail(url=image)
 
     embed.set_footer(text=f"Source: mttvalues.com | Last updated: {updated_at_text}")
     return embed
