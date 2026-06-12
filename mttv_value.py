@@ -11,7 +11,7 @@ async def value(interaction: discord.Interaction, item: str):
     deferred = await safe_defer_interaction(interaction)
 
     try:
-        items = await get_mttvalues_items()
+        items = await get_mttvalues_items(force_refresh=True)
     except Exception as error:
         print(f"Could not fetch MTT Values items for /value: {error}")
         await send_interaction_result(
